@@ -1,0 +1,197 @@
+# Med Peds CCC Streamlit App
+
+This app replaces the repeated REDCap dashboards and Jupyter conversion steps with one resident record across a four-year Medicine-Pediatrics program. Administrators upload New Innovations reports, check the preview, and save. Reviewers read the evidence, document the CCC assessment, and download editable Word reports or resident letters.
+
+The implementation is ready for a test deployment. It has been tested with fictional data and the input structures described in the supplied notebooks. Current raw New Innovations exports and the target GitHub/Streamlit accounts were not available for live acceptance testing. Complete the short acceptance check below before introducing real resident records.
+
+## What the team sees
+
+| Screen | Daily purpose |
+| --- | --- |
+| Program dashboard | See residents, training years, evaluation counts, latest evidence and reviews, and evidence that needs checking. |
+| Upload files | Four clearly labeled upload areas for evaluations, milestones, activities, and duty hours. Review each file and match residents before saving. |
+| Resident review | Read one resident's evidence, specialty-specific milestone history, CCC notes, and all eight checkpoints. |
+| Word reports | Prepare a progress report or CCC letter for one resident, or Word files for a group. Password-to-open protection is the default. |
+| Administration | Maintain the roster, correct uploads, download encrypted backups, restore a backup, and get templates. |
+
+Medicine and Pediatrics retain their own forms, questions, scores, and source labels. They appear within the same resident record and are never averaged into one cross-specialty milestone score. Combined reports remain a separate classification.
+
+## Daily administrator routine
+
+1. Download the required reports from New Innovations.
+2. Open **Upload files** and select Medicine, Pediatrics, or Combined. Choose the actual reporting dates.
+3. Add the files to the four upload areas. Select the appropriate report type within Evaluations, Activities, and Duty hours.
+4. Select **Review these files**. Read warnings and check the displayed entries. Files with parsing errors cannot be accepted.
+5. Confirm every resident match. Save name variations only when you are sure of the match. A stable New Innovations resident ID is preferred when the export supplies it.
+6. Select **Save to resident dashboards** and wait for the saved message. Parsed data and, by default, copies of the original files are encrypted before GitHub receives them.
+7. Open **Resident review** or **Word reports**.
+
+Medicine and Pediatrics files can be uploaded in separate batches throughout the year. You do not need to prepare filenames, run notebooks, make midyear and year-end copies, or assemble an intermediate REDCap CSV.
+
+Read [INPUT_FORMATS.md](INPUT_FORMATS.md) for the exact supported columns and file types. `templates/` contains blank compatibility CSVs; `examples/` contains fictional practice files. A template is an alternative for an unsupported export, not a prerequisite for ordinary uploads.
+
+## Reviewing a resident
+
+Choose a resident, then select the date range to inspect. The Overview shows available evidence and the most recent entered CCC assessment. Evidence contains the original feedback, question responses, evaluator, dates, and source location. Milestones keeps Medicine and Pediatrics separate and lets you follow one code over time.
+
+The eight checkpoints are PGY1 Midyear and Year end through PGY4 Midyear and Year end. Midyear defaults to the first six months of that training year. Year end defaults to the **full training year**. Adjust the period, meeting date, and academic year when the resident has an off-cycle start, leave, or a repeated training year. The academic year remains part of the review identity, so repeated PGY years do not overwrite one another. An administrator can set a current PGY override on the roster when elapsed time does not reflect the resident's actual training level.
+
+The evidence cutoff uses the completion date when available, otherwise the source event or reporting date. For example, an evaluation completed January 5 is not available in a December 31 cutoff, even if the rotation occurred in December. Its rotation dates are retained. Select a cutoff that reflects the evidence available to the committee.
+
+Review fields include strengths, growth areas, patterns over time, the CCC discussion and decision, an action plan, who will help, and follow-up. An expandable section retains clinic visit counts, observed encounters, separate Medicine and Pediatrics ITE results, USMLE results, scholarship, advocacy, and nursing/team feedback. These are entered program values; the app does not claim they were independently verified.
+
+**Save draft** persists work in progress. **Finalize review** preserves a copy of the selected evidence, resident profile, entered assessment, and review history. Later uploads or corrections do not silently change that final evidence. An administrator can reopen a finalized review with a reason; the previous final version remains available for export. This is a versioned review record, not a legally certified electronic signature.
+
+Missing files prompt an evidence check, not a performance judgment. Unassessed scores do not become zero. Conference percentages and cumulative summaries are shown with their actual source periods and are not added or averaged together. Source-reported duty-hour concerns are retained; the app does not infer compliance, days off, or readiness for independent practice from incomplete records.
+
+## Word output
+
+Progress reports contain the entered CCC assessment, evidence counts and source periods, separate milestone sets, recorded clinic/exam fields, procedures, attendance, duty-hour information, review history, and optional full evaluation and self-assessment details. Full details are selected by default. There is no 50-evaluation or five-violation truncation.
+
+For a group of residents, the default progress-report basis is each resident's latest saved CCC review in the selected range, using that review's assessment and reporting period. A resident without a saved review is flagged before generation. Choose the current dashboard date range when you want a current evidence report instead.
+
+CCC letters use the selected review's entered assessment, strengths, growth areas, and action plan. The app does not invent a signature or choose a concern designation based on the time of year. The original local Word letter templates referenced in the notebooks were not supplied, so these are new, editable report and letter layouts.
+
+**Password-protected Word** is the default. Enter a separate export passphrase of at least 14 characters twice. The app encrypts the DOCX with Office password-to-open protection and verifies an exact in-memory decryption roundtrip before releasing it. Bulk downloads put the individually protected documents into a ZIP. Generic filenames avoid resident names in file metadata outside the documents. Share the passphrase separately through your approved workflow.
+
+**Standard Word** is an explicit option. Those downloaded files are readable and must be kept in your approved secure location. Generated files are held in the signed-in session and are not written to GitHub or server disk by the app.
+
+The upstream `msoffcrypto-tool` documentation describes its OOXML encryption support as experimental. Automated roundtrip, wrong-password, and integrity tests pass; open a protected fictional report in your actual Microsoft Word version as part of acceptance testing. Protection failures never fall back to a readable file.
+
+## One-time deployment
+
+The daily administrator does not need to perform these setup steps. They are for the app owner or the person who maintains the Streamlit deployment.
+
+### 1. Prepare the repositories
+
+Put the contents of this project in the GitHub repository used for the Streamlit app. The entry point is **`app.py`**, with the `ccc/`, `.streamlit/`, `templates/`, and other project folders retained. Do not upload the original notebooks or resident export files into the code repository.
+
+Create a **private data repository**, initialized with a README so its `main` branch exists. The code and encrypted data may share one private repository, but a separate private data repository keeps their histories easier to manage. The app verifies that the configured data repository is private; a public repository is rejected even though stored payloads are encrypted.
+
+Create a fine-grained GitHub personal access token restricted to the data repository, with **Contents read and write** permission. The repository owner must also grant access required by any organization approval rules. Branch protection rules must permit these application writes. Keep the token in Streamlit Secrets.
+
+### 2. Generate the first account and encryption key
+
+Use Python 3.12 and a local terminal in the project folder. For a Windows PowerShell terminal:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python scripts/generate_secrets.py
+```
+
+For macOS or Linux:
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python scripts/generate_secrets.py
+```
+
+Choose `setup`, then an administrator username, display name, and a passphrase of at least 14 characters. Password entry is hidden. The helper prints the account's Argon2id password hash and a new encryption key in a TOML settings block. It does not request your GitHub token or write a secrets file.
+
+Copy that block into **Streamlit app settings → Secrets**, and fill in the data repository and fine-grained token there. Do not paste secrets into a GitHub file or a chat message. Back up the encryption key in the program's password manager: losing it and every retained old key makes the stored records unreadable.
+
+The supplied helper uses this layout; placeholders below are not working credentials:
+
+```toml
+[app]
+session_timeout_minutes = 30
+max_session_hours = 8
+
+[github]
+owner = "YOUR_GITHUB_OWNER"
+repo = "YOUR_PRIVATE_DATA_REPOSITORY"
+branch = "main"
+path = "encrypted/ccc.enc"
+token = "YOUR_FINE_GRAINED_GITHUB_TOKEN"
+
+[encryption]
+key = "KEY_FROM_THE_LOCAL_SETUP_HELPER"
+previous_keys = []
+
+[users.coordinator]
+display_name = "Program Coordinator"
+role = "admin"
+password_hash = "ARGON2ID_HASH_FROM_THE_LOCAL_SETUP_HELPER"
+enabled = true
+```
+
+For compatibility with the usual archive convention, `[github] repo` also accepts `OWNER/REPOSITORY` or a GitHub repository URL. If `path` is omitted, `base_path` supplies the parent of `ccc.enc`; its default is `encrypted`.
+
+### 3. Deploy the actual app
+
+In the intended Streamlit hosting account, select the code repository, branch, **`app.py`**, and Python 3.12. The pinned `requirements.txt` supplies the packages. Add the generated Secrets block and use restricted app sharing for the authorized team. The app also requires its own account password before any resident data are loaded.
+
+The hosting service processes decrypted records in memory after authentication. Choose an institution-approved hosting arrangement for the information involved; application encryption and passwords alone do not establish institutional approval or a particular compliance status. This package does not configure enterprise SSO, a reverse proxy, or an organizational access policy.
+
+### 4. Initialize and practise
+
+Sign in, choose **Create an empty resident dashboard**, and use Administration to add the roster. The empty-dashboard action appears only after a private repository and branch are confirmed and the exact data file is absent. If existing records should already be there, verify the configured path before initializing.
+
+Use the fictional files before real exports. For a separate preview without credentials, run:
+
+```bash
+streamlit run demo_app.py
+```
+
+The preview contains only fictional data, offers no uploads or saving, and is separate from production. Deploy `app.py` for actual use.
+
+### 5. Add accounts
+
+Run the helper again and choose **`user`**. That mode generates only a new account block and leaves the encryption key unchanged. Add the account block to Streamlit Secrets.
+
+| Role | Access |
+| --- | --- |
+| Admin | View and export; upload files; edit the roster and settings; create, finalize, and reopen reviews; back up and restore records. |
+| Reviewer | View and export; create and finalize CCC reviews. |
+| Viewer | View dashboards and export documents. |
+
+Use `enabled = false` to disable an account. Account removal, password changes, role changes, or disablement are checked on app reruns. Inactive sessions expire after 30 minutes by default, with an eight-hour maximum. A background check closes an active browser session after expiry; logout clears its application session data. Login attempts are limited per account and across the server process. Those limits reset on a process restart and do not coordinate multiple replicas; use hosting-level controls where needed.
+
+## Saving, corrections and recovery
+
+All resident records, names, comments, source filenames, review fields, name aliases, settings and audit events are encrypted before persistence. Original uploads, when retained, use separate encrypted files with random names. GitHub sees ciphertext and generic filenames/commit messages; it still sees repository/account metadata, sizes and change times. The encryption key and token stay outside the repository.
+
+Normal dashboard navigation reads the loaded signed-in session, so every tab change does not reload the entire archive. Saving is explicit and checks the GitHub file version originally loaded. If another person saved first, the app refuses to overwrite their change. On a connection problem, it shows **Not saved** and preserves the last confirmed state. Download the pending changes as an encrypted file if needed, then reload and reapply the changes to the newer version. There is no forced-overwrite button.
+
+Repeated identical uploads are detected. Exact evidence duplicates are skipped while preserving separate event counts where the source supplies distinct IDs. Changed or ambiguous overlapping events are flagged for review. A complete corrected export can replace a selected earlier upload; the entire prior upload is excluded from live views. An administrator can also exclude an incorrect upload with a reason. Historical final review snapshots remain intact.
+
+The encrypted dashboard backup includes parsed evidence, residents, reviews and audit history. It **does not include the separately encrypted original file copies**. Those remain in the data repository; preserve that repository and the encryption key as part of your recovery plan. Restore previews the resident, evidence and review counts and requires explicit confirmation before replacing the dashboard. A backup restored into a different repository will not automatically move its original-file objects.
+
+Data serialization is compressed inside the authenticated encryption envelope to reduce repeated four-year narrative and snapshot content. The limits are 64 MiB of expanded dashboard JSON, 8 MiB of compressed state, 15 MiB per original upload, and a 60 MiB/30-file upload batch. Exceeding a limit blocks the save rather than dropping old records. For a program that grows beyond this small-team archive design, move the persistence layer to an approved database/object store while keeping the app's resident model and UI.
+
+Retain previous encryption keys in `previous_keys` when introducing a new current key. New writes use the current key, and old keys can decrypt older files. Saving the dashboard does not re-encrypt every historical Git commit or original upload. Do not remove old keys while those objects are still needed. There is no automatic full-archive key-rotation command in this version.
+
+## Acceptance check before real data
+
+1. Confirm signed-out users see no resident data and each account has the intended role.
+2. Save the fictional roster and one example of every report category. Refresh, sign out, sign back in, and confirm the records remain.
+3. Reimport the same file and confirm counts do not increase. Check a corrected export and the replacement preview.
+4. Check a current deidentified export from each distinct source format: Medicine evaluation, Pediatrics evaluation, SAR, each specialty's milestone PDF, procedure logger, conference attendance, shift log, and duty-hour violation report.
+5. Compare resident names, actual evidence dates, evaluation counts, question responses/comments, and scores against those exports. Confirm each specialty's PDF has explicit, unambiguous score labels.
+6. Finalize a fictional review, add later evidence, and verify the final report still reflects the saved meeting evidence.
+7. Open a password-protected fictional report and letter in the Word version your team uses. Test an encrypted backup restore in the test deployment.
+8. Use two signed-in sessions to confirm an older save is refused after the other session saves.
+
+Automated tests use synthetic inputs and mocked GitHub responses. Run them with:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Current project-specific verification results are documented in `VALIDATION.md`.
+
+## Existing REDCap records
+
+The supplied PDF depicts one populated PGY1 midyear dashboard, not a data dictionary or a complete four-year data export. This package does not claim to have migrated the residents shown in the source material. Original New Innovations evidence can be imported directly, and earlier CCC narratives can be entered into their dated reviews. A bulk historical migration needs the REDCap CSV plus its data dictionary, with explicit resident and date mapping. See `MIGRATION_NOTES.md` for the preserved fields and changed behavior.
+
+## Source documentation
+
+- [Streamlit app secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
+- [Streamlit native app testing](https://docs.streamlit.io/develop/concepts/app-testing)
+- [GitHub repository contents API](https://docs.github.com/en/rest/repos/contents)
+- [Cryptography Fernet and MultiFernet](https://cryptography.io/en/stable/fernet/)
+- [Argon2 password hashing](https://argon2-cffi.readthedocs.io/en/stable/howto.html)
+- [Office document protection support and limitations](https://msoffcrypto-tool.readthedocs.io/en/latest/)
