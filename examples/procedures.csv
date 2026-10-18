@@ -1,0 +1,3 @@
+ResidentID,ResidentLastName,ResidentFirstName,ResidentMiddleName,DatePerformed,ResidentStatus,Procedure,ProcedureLogID
+fictional-resident-1,Example,Alex,,09/15/2026,R2,Lumbar puncture,fictional-procedure-1
+fictional-resident-1,Example,Alex,,09/15/2026,R2,Lumbar puncture,fictional-procedure-2
