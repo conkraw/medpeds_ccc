@@ -1,6 +1,26 @@
 # Validation record
 
-## Result
+## Public repository support, version 1.0.2
+
+On October 18, 2026 UTC, all 217 automated tests passed in 14.78 seconds on Python 3.14.8. The focused security and storage suite also passed separately with 108 tests in 2.58 seconds.
+
+Public and private repositories are both accepted automatically. The updated checks cover confirmed missing dashboard files, encrypted dashboard save/load, encrypted original-file round trips, opaque source filenames, generic commit messages, and refusal of stale SHA updates in both visibility modes. Missing or nonboolean repository visibility metadata and a mismatched repository identity are rejected before reading or writing application files.
+
+The application still encrypts every dashboard and original-file payload before a GitHub write. Key and token validation, immutable branch reads, file integrity verification, save conflict handling, and app authentication remain in place. The setup screen now describes the connected encrypted storage without claiming the repository is private.
+
+These checks use synthetic data and simulated GitHub responses. The user's live GitHub repository and Streamlit deployment were not changed from this workspace. The earlier Python 3.14 dependency correction is included in this release.
+
+## Python 3.14 deployment fix, version 1.0.1
+
+On October 18, 2026 UTC, a fresh isolated CPython 3.14.8 environment installed all 59 production and test packages using binary wheels only. Dependency resolution took 2.51 seconds, preparation took 6.37 seconds, and installation took 80 milliseconds in this workspace. These timings describe this test environment, not a promised Streamlit deployment time.
+
+The sole dependency change was `pandas==2.2.3` to `pandas==2.3.3`, the first pandas release with general Python 3.14 compatibility. All 183 automated tests then passed on Python 3.14.8 in 18.04 seconds. This verifies installation and application behavior for the updated dependency set, including the dashboard, file imports, encrypted storage logic, and protected Word exports.
+
+The user-provided deployment log stopped after dependency resolution and contained no final exception. The old pandas pin is a confirmed Python 3.14 compatibility problem, but the excerpt cannot establish that it was the only cause of the observed delay. The live repository and Streamlit deployment were not changed by these local checks.
+
+Official compatibility reference: https://pandas.pydata.org/docs/whatsnew/v2.3.3.html
+
+## Original version 1.0.0 result
 
 **183 automated tests passed on October 17, 2026**, using Python 3.12 and the pinned dependencies in this package. The final run completed in 33.34 seconds. An additional run of all 13 Streamlit AppTests passed after adding explicit assertions that login and export passphrase fields clear after successful or failed actions.
 
@@ -12,7 +32,7 @@ This is a working first implementation prepared for a test deployment. These che
 | --- | --- |
 | Importers | Structured evaluation and self-assessment responses, source identity, different specialty labels, spreadsheet/HTML/tabular inputs, percent and zero values, milestone label ambiguity, malformed and oversized files, and category-specific output. |
 | Resident model | Exact and alias matching, ambiguous names, duplicates and corrections, native event IDs, source exclusion, evidence periods, complete snapshot coverage, repeated training years, final review snapshots, and review reopening/version history. |
-| Encrypted storage | Authenticated encryption, key compatibility, bounded compressed state, invalid or truncated inputs, private repository/branch verification, immutable reads, content hashes, explicit missing-file handling, SHA conflicts, ambiguous saves, and immutable original-file retries. |
+| Encrypted storage | Authenticated encryption, key compatibility, bounded compressed state, invalid or truncated inputs, repository identity/branch verification, immutable reads, content hashes, explicit missing-file handling, SHA conflicts, ambiguous saves, and immutable original-file retries. |
 | Access and passwords | Argon2id password verification, account configuration, session expiry, role restrictions, failed-login handling, attempt limits, and clearing password input state. |
 | Word reports | All evidence categories, retained narrative details, separate specialties, assessment fields, explicit CCC decisions, final snapshots, prior versions, invalid ownership, and unassessed or zero values. |
 | Word protection | Password-to-open roundtrip, wrong passwords, integrity failures, exact recovered document bytes, passphrase validation, and fail-closed behavior. |
@@ -39,7 +59,7 @@ No real resident information is included in the example files, automated fixture
 
 The following require the intended accounts, installed software, or current exports and were not performed in this workspace:
 
-1. Live writes and recovery against the program's private GitHub repository.
+1. Live writes and recovery against the program's configured GitHub repository.
 2. A deployed Streamlit session using the institution's actual sharing and access settings.
 3. Browser interaction and concurrent saves using two actual staff accounts. AppTests exercise Streamlit through its testing API, not a browser.
 4. Comparison against a current deidentified example of every New Innovations report layout the program intends to upload, especially each specialty's milestone PDF.

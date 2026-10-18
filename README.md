@@ -4,6 +4,16 @@ This app replaces the repeated REDCap dashboards and Jupyter conversion steps wi
 
 The implementation is ready for a test deployment. It has been tested with fictional data and the input structures described in the supplied notebooks. Current raw New Innovations exports and the target GitHub/Streamlit accounts were not available for live acceptance testing. Complete the short acceptance check below before introducing real resident records.
 
+### Public and private repositories
+
+Version 1.0.2 accepts either a public or private GitHub repository for encrypted storage. Every dashboard and original-file payload the app saves is encrypted before upload in both cases. App sign-in, encryption keys, GitHub write permissions, and conflict checks still apply. No additional setting is required to use a public repository.
+
+### Fix for an existing Python 3.14 deployment
+
+Version 1.0.1 updates one dependency from `pandas==2.2.3` to `pandas==2.3.3`. The earlier pin has no Python 3.14 wheel. If your Streamlit build log shows Python 3.14 and pauses after resolving packages, update that line in the repository's `requirements.txt` and commit the change. Streamlit will rebuild the dependencies. The corrected package set installs from binary wheels on Python 3.14.8. This change does not require editing Secrets or recreating the app.
+
+The excerpted build log did not contain a final failure, so it cannot establish that this incompatibility was the only cause of the delay. See `VALIDATION.md` for the checks performed on the updated package.
+
 ## What the team sees
 
 | Screen | Daily purpose |
@@ -66,7 +76,9 @@ The daily administrator does not need to perform these setup steps. They are for
 
 Put the contents of this project in the GitHub repository used for the Streamlit app. The entry point is **`app.py`**, with the `ccc/`, `.streamlit/`, `templates/`, and other project folders retained. Do not upload the original notebooks or resident export files into the code repository.
 
-Create a **private data repository**, initialized with a README so its `main` branch exists. The code and encrypted data may share one private repository, but a separate private data repository keeps their histories easier to manage. The app verifies that the configured data repository is private; a public repository is rejected even though stored payloads are encrypted.
+Use your existing GitHub repository for the code and encrypted data, or select a separate data repository. Both public and private repositories are supported. Initialize the chosen repository with a README so its `main` branch exists. The app verifies the repository identity and branch before reading or saving records.
+
+In a public repository, anyone can download the encrypted files. Reading their resident information requires the encryption key, which stays in Streamlit Secrets along with the GitHub token and account password hashes. Use the app's upload screen for resident files so encryption happens before they reach GitHub. Files manually uploaded or committed to GitHub are not encrypted by the app.
 
 Create a fine-grained GitHub personal access token restricted to the data repository, with **Contents read and write** permission. The repository owner must also grant access required by any organization approval rules. Branch protection rules must permit these application writes. Keep the token in Streamlit Secrets.
 
@@ -101,7 +113,7 @@ max_session_hours = 8
 
 [github]
 owner = "YOUR_GITHUB_OWNER"
-repo = "YOUR_PRIVATE_DATA_REPOSITORY"
+repo = "YOUR_DATA_REPOSITORY"
 branch = "main"
 path = "encrypted/ccc.enc"
 token = "YOUR_FINE_GRAINED_GITHUB_TOKEN"
@@ -121,13 +133,13 @@ For compatibility with the usual archive convention, `[github] repo` also accept
 
 ### 3. Deploy the actual app
 
-In the intended Streamlit hosting account, select the code repository, branch, **`app.py`**, and Python 3.12. The pinned `requirements.txt` supplies the packages. Add the generated Secrets block and use restricted app sharing for the authorized team. The app also requires its own account password before any resident data are loaded.
+In the intended Streamlit hosting account, select the code repository, branch, **`app.py`**, and Python 3.12 or 3.14. The pinned `requirements.txt` supplies the packages. Add the generated Secrets block and configure the intended Streamlit sharing settings. The app requires its own account password before any resident data are loaded.
 
 The hosting service processes decrypted records in memory after authentication. Choose an institution-approved hosting arrangement for the information involved; application encryption and passwords alone do not establish institutional approval or a particular compliance status. This package does not configure enterprise SSO, a reverse proxy, or an organizational access policy.
 
 ### 4. Initialize and practise
 
-Sign in, choose **Create an empty resident dashboard**, and use Administration to add the roster. The empty-dashboard action appears only after a private repository and branch are confirmed and the exact data file is absent. If existing records should already be there, verify the configured path before initializing.
+Sign in, choose **Create an empty resident dashboard**, and use Administration to add the roster. The empty-dashboard action appears only after the repository and branch are confirmed and the exact data file is absent. If existing records should already be there, verify the configured path before initializing.
 
 Use the fictional files before real exports. For a separate preview without credentials, run:
 
@@ -191,6 +203,7 @@ The supplied PDF depicts one populated PGY1 midyear dashboard, not a data dictio
 
 - [Streamlit app secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
 - [Streamlit native app testing](https://docs.streamlit.io/develop/concepts/app-testing)
+- [pandas 2.3.3 Python 3.14 compatibility](https://pandas.pydata.org/docs/whatsnew/v2.3.3.html)
 - [GitHub repository contents API](https://docs.github.com/en/rest/repos/contents)
 - [Cryptography Fernet and MultiFernet](https://cryptography.io/en/stable/fernet/)
 - [Argon2 password hashing](https://argon2-cffi.readthedocs.io/en/stable/howto.html)
