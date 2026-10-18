@@ -1,10 +1,13 @@
 """Synthetic import tests. These fixtures contain no real resident information."""
 import csv
+import hashlib
 import io
 import unittest
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
+from ccc import model as m
 from ccc.importers import ParseResult, parse_upload
 
 
@@ -39,6 +42,63 @@ def synthetic_xlsx(*, percent=False, formula=False):
 
 
 class ImporterTests(unittest.TestCase):
+    def test_name_only_examples_parse_match_and_keep_distinct_events(self):
+        examples = Path(__file__).resolve().parents[1] / "examples"
+        state = m.new_state("Fictional name-only example program")
+        with (examples / "roster.csv").open(newline="", encoding="utf-8-sig") as fixture:
+            for row in csv.DictReader(fixture):
+                self.assertNotIn("external_id", row)
+                row["aliases"] = [alias.strip() for alias in row.get("aliases", "").split(";") if alias.strip()]
+                state = m.save_resident(state, row, "admin")
+        self.assertEqual(len(state["residents"]), 1)
+        resident_id = state["residents"][0]["id"]
+        self.assertTrue(resident_id)
+        self.assertFalse(state["residents"][0].get("external_id"))
+
+        cases = [
+            ("evaluations_medicine.csv", "evaluations", "Medicine", 2),
+            ("evaluations_pediatrics.csv", "evaluations", "Pediatrics", 1),
+            ("self_assessments.csv", "self_assessments", "Combined", 1),
+            ("milestones.csv", "milestones", "Combined", 4),
+            ("procedures.csv", "procedures", "Medicine", 2),
+            ("conferences.csv", "conferences", "Medicine", 2),
+            ("duty_hours.csv", "duty_hours", "Medicine", 2),
+            ("duty_violations.csv", "duty_violations", "Medicine", 1),
+        ]
+        for filename, kind, specialty, expected_count in cases:
+            with self.subTest(filename=filename):
+                data = (examples / filename).read_bytes()
+                parsed = parse_upload(filename, data, kind, specialty, "2026-07-01", "2026-09-30")
+                self.assertFalse(parsed.errors, parsed.errors)
+                self.assertEqual(len(parsed.records), expected_count)
+                for record in parsed.records:
+                    # Resident identity and a native event ID are both optional
+                    # in source exports; the app supplies its own internal IDs.
+                    self.assertFalse(record.get("external_id"))
+                    self.assertFalse(record.get("external_record_id"))
+                    self.assertEqual(m.match_resident(state, record["resident_name"]), resident_id)
+                source = {"name": filename, "sha256": hashlib.sha256(data).hexdigest(), "kind": kind,
+                          "specialty": specialty, "period_start": "2026-07-01", "period_end": "2026-09-30"}
+                state, stats = m.import_records(state, parsed.records, source, {}, "admin")
+                self.assertEqual(stats["new_records"], expected_count)
+                self.assertEqual(stats["duplicates"], 0)
+                self.assertEqual(stats["possible_updates"], 0)
+                repeated, stats = m.prepare_records(state, parsed.records, {})
+                self.assertEqual(repeated, [])
+                self.assertEqual(stats["duplicates"], expected_count)
+
+        self.assertEqual(len(state["records"]), 15)
+        self.assertEqual(len({record["id"] for record in state["records"]}), 15)
+        self.assertEqual({record["resident_id"] for record in state["records"]}, {resident_id})
+        evaluations = [record for record in state["records"] if record["category"] == "evaluations"]
+        self.assertEqual(len(evaluations), 3)
+        self.assertEqual(sum(len(record["questions"]) for record in evaluations), 5)
+        procedures = [record for record in state["records"] if record["category"] == "procedures"]
+        self.assertEqual(len(procedures), 2)
+        self.assertEqual(procedures[0]["date"], procedures[1]["date"])
+        self.assertEqual(procedures[0]["metric"], procedures[1]["metric"])
+        self.assertEqual(m.validate_state(state), state)
+
     def test_question_rows_collapse_without_losing_overall_or_response(self):
         headers = ["Subject Status", "Last Name", "First Name", "Evaluator", "Start Date", "Subject Rotation", "Evaluator Department", "Session Name", "Question", "Response", "Comment", "Overall Comments"]
         base = ["PGY2", "Example", "Alex", "Reviewer One", "08/01/2026", "WARD", "MED", "Rotation evaluation"]

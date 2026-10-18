@@ -4,6 +4,14 @@ This app replaces the repeated REDCap dashboards and Jupyter conversion steps wi
 
 The implementation is ready for a test deployment. It has been tested with fictional data and the input structures described in the supplied notebooks. Current raw New Innovations exports and the target GitHub/Streamlit accounts were not available for live acceptance testing. Complete the short acceptance check below before introducing real resident records.
 
+### Resident names, without manually assigned IDs
+
+Use the resident's name from New Innovations. No New Innovations ID or REDCap record ID is required. Version 1.0.3 puts names first in the roster, upload matching, and report selection. The templates and fictional examples do not require you to supply resident or evaluation IDs.
+
+The app automatically creates a private internal reference when a resident is added. It keeps that resident's evidence and reviews connected over four years, even when their name is edited. You do not create or manage that reference. Add a prior name or another confirmed spelling under Other names used in exports, or confirm and remember the variation during upload. Ambiguous names need an explicit match before evidence is saved. An ambiguous roster CSV is stopped for review instead of creating another resident.
+
+Existing optional source references remain supported under a collapsed section for older imports. Keep a REDCap record ID separately only if it is needed to reconcile historical REDCap data during migration.
+
 ### Public and private repositories
 
 Version 1.0.2 accepts either a public or private GitHub repository for encrypted storage. Every dashboard and original-file payload the app saves is encrypted before upload in both cases. App sign-in, encryption keys, GitHub write permissions, and conflict checks still apply. No additional setting is required to use a public repository.
@@ -32,7 +40,7 @@ Medicine and Pediatrics retain their own forms, questions, scores, and source la
 2. Open **Upload files** and select Medicine, Pediatrics, or Combined. Choose the actual reporting dates.
 3. Add the files to the four upload areas. Select the appropriate report type within Evaluations, Activities, and Duty hours.
 4. Select **Review these files**. Read warnings and check the displayed entries. Files with parsing errors cannot be accepted.
-5. Confirm every resident match. Save name variations only when you are sure of the match. A stable New Innovations resident ID is preferred when the export supplies it.
+5. Confirm every resident name match. Save name variations only when you are sure they refer to the same resident. No record ID is required.
 6. Select **Save to resident dashboards** and wait for the saved message. Parsed data and, by default, copies of the original files are encrypted before GitHub receives them.
 7. Open **Resident review** or **Word reports**.
 

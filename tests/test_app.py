@@ -138,7 +138,6 @@ def navigate(app, page):
 def enter_new_resident(app):
     navigate(app, "Administration")
     by_label(app.text_input, "Resident name").set_value("Casey Fictional")
-    by_label(app.text_input, "New Innovations resident ID").set_value("NI-303")
 
 
 def test_missing_configuration_and_unsigned_session_never_open_storage(app_factory):
@@ -203,8 +202,13 @@ def test_admin_roster_save_is_persisted_and_available_to_a_new_session(app_facto
     no_exceptions(app)
     assert len(backend.saves) == 1
     assert {r["name"] for r in app.session_state["state"]["residents"]} == {"Alex Fictional", "Casey Fictional"}
+    added = next(r for r in app.session_state["state"]["residents"] if r["name"] == "Casey Fictional")
+    assert added["external_id"] == ""
+    assert added["id"]
+    assert added["id"] != "Casey Fictional"
     reopened = login(create(), "viewer")
     assert {r["name"] for r in reopened.session_state["state"]["residents"]} == {"Alex Fictional", "Casey Fictional"}
+    assert next(r for r in reopened.session_state["state"]["residents"] if r["name"] == "Casey Fictional")["id"] == added["id"]
 
 
 def test_reviewer_saves_draft_then_finalizes_its_evidence_snapshot(app_factory):

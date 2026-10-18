@@ -9,6 +9,7 @@ import math
 import re
 import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
@@ -33,6 +34,16 @@ def _clear_session() -> None:
 def _escape(value: object) -> str:
     """Display uploaded text literally in Markdown-capable widget labels."""
     return re.sub(r"([\\`*_{}\[\]()#+.!|<>$-])", r"\\\1", str(value))
+
+
+def _resident_labels(residents: list[dict]) -> dict[str, str]:
+    counts = Counter(m.normalize_name(r["name"]) for r in residents)
+    return {
+        r["id"]: (
+            r["name"] if counts[m.normalize_name(r["name"])] == 1
+            else f"{r['name']} · started {r.get('start_date', '')} · {r['id'][:8]}"
+        ) for r in residents
+    }
 
 
 def _today(state: dict | None = None) -> date:
@@ -251,7 +262,7 @@ def _pick_resident(state: dict, key: str, include_inactive: bool = True) -> dict
         st.info("Add residents under Administration to begin.")
         return None
     ids = [r["id"] for r in residents]
-    lookup = {r["id"]: m.resident_label(r) for r in residents}
+    lookup = _resident_labels(residents)
     selected_id = st.session_state.get("selected_resident")
     default = ids.index(selected_id) if selected_id in ids else 0
     picked = st.selectbox("Find a resident", ids, index=default, format_func=lambda x: lookup[x], key=key)
@@ -664,8 +675,9 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     for record in all_records:
         names.setdefault(m.mapping_key(record), record)
     st.markdown("**Confirm the residents**")
+    st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
     roster_ids = [r["id"] for r in sorted(state["residents"], key=lambda r: r["name"].casefold())]
-    roster_labels = {r["id"]: m.resident_label(r) for r in state["residents"]}
+    roster_labels = _resident_labels(state["residents"])
     mappings = {}
     for key, record in names.items():
         auto = m.match_resident(state, record.get("resident_name", ""), record.get("external_id", ""))
@@ -785,7 +797,7 @@ def _word_reports(state: dict) -> None:
             start, end = _range_controls(state, prefix="export_range")
     else:
         ids = [r["id"] for r in residents]
-        labels = {r["id"]: m.resident_label(r) for r in residents}
+        labels = _resident_labels(residents)
         selected = st.multiselect("Choose residents", ids, default=[r["id"] for r in residents if r.get("status") == "Active"], format_func=lambda x: labels[x])
         selected_residents = [r for r in residents if r["id"] in selected]
         start, end = _range_controls(state, prefix="export_group_range")
@@ -870,17 +882,17 @@ def _word_reports(state: dict) -> None:
 
 def _roster(state: dict, store: GitHubStore) -> None:
     st.subheader("Resident roster")
+    st.caption("Use each resident's name as it appears in New Innovations. You do not need to create a record ID.")
     existing = sorted(state["residents"], key=lambda r: r["name"].casefold())
     if existing:
-        st.dataframe(pd.DataFrame([{"Name": r["name"], "New Innovations ID": r.get("external_id", ""), "Start": r["start_date"],
+        st.dataframe(pd.DataFrame([{"Name": r["name"], "Start": r["start_date"],
                                     "Graduation": r.get("graduation_date", ""), "Status": r.get("status", "Active")} for r in existing]), hide_index=True, width="stretch")
     lookup = {r["id"]: r for r in existing}
-    chosen = st.selectbox("Add or edit a resident", ["__new__", *lookup], format_func=lambda x: "Add a resident" if x == "__new__" else m.resident_label(lookup[x]))
+    labels = _resident_labels(existing)
+    chosen = st.selectbox("Add or edit a resident", ["__new__", *lookup], format_func=lambda x: "Add a resident" if x == "__new__" else labels[x])
     item = lookup.get(chosen, {})
     with st.form("roster_form_" + chosen):
-        a, b = st.columns(2)
-        name = a.text_input("Resident name", value=item.get("name", ""))
-        external = b.text_input("New Innovations resident ID", value=item.get("external_id", ""), help="Use the stable resident ID if your export supplies one.")
+        name = st.text_input("Resident name", value=item.get("name", ""))
         a, b = st.columns(2)
         start = a.date_input("Training start date", value=m.parse_date(item.get("start_date")) or m.current_academic_start(_today(state)))
         graduation = b.date_input("Expected graduation date", value=m.parse_date(item.get("graduation_date")), help="Leave blank to calculate four years from the training start date.")
@@ -888,7 +900,9 @@ def _roster(state: dict, store: GitHubStore) -> None:
         a, b = st.columns(2)
         status = a.selectbox("Resident status", ["Active", "Graduated", "Inactive"], index=["Active", "Graduated", "Inactive"].index(item.get("status", "Active")))
         override = b.selectbox("Current training year", [0, 1, 2, 3, 4], index=int(item.get("pgy_override") or 0), format_func=lambda x: "Calculate from start date" if x == 0 else f"PGY{x} override")
-        aliases = st.text_area("Other names used in exports", value="\n".join(item.get("aliases", [])), help="One exact name variation per line. Confirmed matches can also be saved during upload.")
+        aliases = st.text_area("Other names used in exports", value="\n".join(item.get("aliases", [])), help="One confirmed name variation per line. When changing a resident's name, include the previous name here so older exports still match. Confirmed matches can also be saved during upload.")
+        with st.expander("Optional reference from an older import"):
+            external = st.text_input("Existing source reference (optional)", value=item.get("external_id", ""), help="Leave blank for your name-based New Innovations exports. Do not create a new ID or enter a REDCap record number here. Existing references remain supported for earlier imports.")
         submitted = st.form_submit_button("Save resident", type="primary")
     if submitted:
         from datetime import timedelta
@@ -901,7 +915,7 @@ def _roster(state: dict, store: GitHubStore) -> None:
         except m.ValidationError as exc:
             st.error(str(exc))
     with st.expander("Add the roster from a CSV"):
-        st.caption("Use the blank roster template below. Dates use YYYY-MM-DD. Existing residents with matching New Innovations IDs are updated after preview.")
+        st.caption("The roster needs the resident's name and training start date. Dates use YYYY-MM-DD. Existing residents are matched by name or a saved name variation before updating. No record ID is required.")
         uploaded = st.file_uploader("Roster CSV", type=["csv"], key="roster_upload")
         if uploaded:
             try:
@@ -920,6 +934,11 @@ def _roster(state: dict, store: GitHubStore) -> None:
                     for _, row in df.iterrows():
                         item = row.to_dict()
                         target = m.match_resident(candidate, item["name"], item.get("external_id", ""))
+                        if not target:
+                            named = [r for r in candidate["residents"] if m.normalize_name(item["name"]) in
+                                     {m.normalize_name(n) for n in [r["name"], *r.get("aliases", [])]}]
+                            if named:
+                                raise m.ValidationError("A roster name cannot be matched unambiguously. Edit that resident in the roster form before importing this CSV.")
                         if target:
                             item = {**m.resident_by_id(candidate, target), **item, "id": target}
                         if "aliases" in df.columns:

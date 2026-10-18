@@ -1,5 +1,15 @@
 # Validation record
 
+## Resident names without source IDs, version 1.0.3
+
+On October 18, 2026 UTC, the complete suite passed on Python 3.14.8: 221 tests and eight subtests in 11.13 seconds. These checks used synthetic data and simulated storage responses.
+
+The roster form, default templates, examples, and resident selection menus now use names without requiring a New Innovations resident ID, per-event ID, or REDCap record number. Existing optional source references are preserved under an expandable section for older imports. The app continues to create random internal UUIDs automatically.
+
+Four focused regressions verify name-only matching, normalized names and saved aliases, explicit resolution of duplicate names, and evidence/review continuity when a resident's name is edited while keeping the same internal UUID. A name-only end-to-end check reads all eight example exports and saves 15 evidence records, including three logical evaluations with five question responses and two identical same-day procedure entries retained separately. Reimport checks recognize the saved records.
+
+The targeted model/importer checks passed with 68 tests and eight subtests. All 13 Streamlit AppTests also passed, including saving a resident without entering a source ID and reopening that same resident with its automatic internal reference intact. An ambiguous roster CSV is stopped for review rather than creating another resident. The public/private repository support and Python 3.14 dependency correction are retained.
+
 ## Public repository support, version 1.0.2
 
 On October 18, 2026 UTC, all 217 automated tests passed in 14.78 seconds on Python 3.14.8. The focused security and storage suite also passed separately with 108 tests in 2.58 seconds.

@@ -327,6 +327,7 @@ class MemoryGitHub:
         self.files = {}
         self.calls = []
         self.private = True
+        self.repository_metadata = None
         self.repo_status = 200
         self.branch_status = 200
         self.content_status = None
@@ -364,7 +365,9 @@ class MemoryGitHub:
             raise requests.ConnectionError("synthetic-token-or-private-data-must-never-escape")
         suffix = url.removeprefix("https://api.github.com/repos/example/private-data")
         if suffix == "":
-            return FakeResponse(self.repo_status, {"private": self.private, "full_name": "example/private-data"})
+            meta = self.repository_metadata if self.repository_metadata is not None else {
+                "private": self.private, "full_name": "example/private-data"}
+            return FakeResponse(self.repo_status, meta)
         if suffix == "/branches/main":
             return FakeResponse(self.branch_status, {"name": "main", "commit": {"sha": self.commit}})
         assert suffix.startswith("/contents/")
@@ -421,7 +424,9 @@ def config():
             "token": "github_pat_" + "SYNTHETIC_TEST_ONLY_" * 3, "path": "encrypted/ccc.enc"}
 
 
-def test_missing_state_means_verified_private_repo_branch_and_path(github, config, keys):
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_missing_state_means_verified_repo_branch_and_path(github, config, keys, private):
+    github.private = private
     store = storage.GitHubStore(config, keys)
     assert store.load() == (None, None)
     assert len(github.calls) == 3
@@ -430,22 +435,32 @@ def test_missing_state_means_verified_private_repo_branch_and_path(github, confi
     assert not github.trust_env
 
 
-def test_round_trip_stores_only_ciphertext_generic_names_and_messages(github, config, keys, state):
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_round_trip_stores_only_ciphertext_generic_names_and_messages(github, config, keys, state, private):
+    github.private = private
     store = storage.GitHubStore(config, keys)
     sha = store.save(state, None)
     assert storage._valid_sha(sha)
-    assert store.load() == (state, sha)
+    assert storage.GitHubStore(config, keys).load() == (state, sha)
     put = [call for call in github.calls if call[0] == "PUT"][0]
     payload = put[2]["json"]
     assert "sha" not in payload
-    assert b"Jordan Example" not in github.files[config["path"]]
+    ciphertext = github.files[config["path"]]
+    assert b"Jordan Example" not in ciphertext
+    assert base64.b64decode(payload["content"], validate=True) == ciphertext
+    assert storage.decrypt_state(ciphertext, keys) == state
     assert "Jordan Example" not in put[1] + payload["message"]
+    assert "Jordan Example" not in json.dumps(payload)
+    assert keys[0] not in json.dumps(payload)
+    assert config["token"] not in json.dumps(payload)
     assert config["token"] not in put[1] and config["token"] not in repr(store)
-    assert config["token"] not in repr(store)
+    assert "private" not in repr(store) and "public" not in repr(store)
     assert put[2]["headers"]["Authorization"] == f"Bearer {config['token']}"
 
 
-def test_only_loaded_sha_can_update_an_existing_state(github, config, keys, state):
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_only_loaded_sha_can_update_an_existing_state(github, config, keys, state, private):
+    github.private = private
     store = storage.GitHubStore(config, keys)
     sha = store.save(state, None)
     newer = dict(state, note="a new synthetic review")
@@ -458,13 +473,29 @@ def test_only_loaded_sha_can_update_an_existing_state(github, config, keys, stat
     assert store.load() == (newer, new_sha)
 
 
-@pytest.mark.parametrize("action", ["load", "save"])
-def test_public_repository_is_rejected_before_data_access(github, config, keys, state, action):
-    github.private = False
+@pytest.mark.parametrize("repository_metadata", [
+    {"full_name": "example/private-data"},
+    *({"private": value, "full_name": "example/private-data"}
+      for value in (None, "false", 0, 1, [], {})),
+    {"private": False, "full_name": "example/different-repository"},
+])
+@pytest.mark.parametrize("action", ["load", "save", "write_blob", "read_blob"])
+def test_unverified_repository_metadata_is_rejected_before_data_access(
+        github, config, keys, state, action, repository_metadata):
+    github.repository_metadata = repository_metadata
     store = storage.GitHubStore(config, keys)
-    with pytest.raises(storage.StorageError, match="private"):
-        store.load() if action == "load" else store.save(state, None)
+    identifier = uuid.uuid4().hex
+    with pytest.raises(storage.StorageError):
+        if action == "load":
+            store.load()
+        elif action == "save":
+            store.save(state, None)
+        elif action == "write_blob":
+            store.write_blob(identifier, b"Synthetic original")
+        else:
+            store.read_blob(identifier)
     assert len(github.calls) == 1
+    assert not github.files
 
 
 @pytest.mark.parametrize("location,status", [("repo_status", 404), ("repo_status", 403),
@@ -551,14 +582,24 @@ def test_unsafe_storage_paths_are_rejected(github, config, keys, path):
     assert not github.calls
 
 
-def test_encrypted_originals_use_opaque_identifiers_and_are_immutable(github, config, keys):
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_encrypted_originals_use_opaque_identifiers_and_are_immutable(github, config, keys, private):
+    github.private = private
     store = storage.GitHubStore(config, keys)
     identifier = uuid.uuid4().hex
-    original = b"%PDF-1.7 synthetic resident content"
+    original = b"%PDF-1.7 synthetic Jordan Example evaluation.pdf content"
     path, sha = store.write_blob(identifier, original)
     assert path == f"encrypted/sources/{identifier}.enc"
     assert original not in github.files[path]
-    assert store.read_blob(identifier) == original
+    assert b"Jordan Example" not in github.files[path]
+    assert storage.GitHubStore(config, keys).read_blob(identifier) == original
+    put = [call for call in github.calls if call[0] == "PUT"][0]
+    payload = put[2]["json"]
+    assert base64.b64decode(payload["content"], validate=True) == github.files[path]
+    assert "Jordan Example" not in put[1] + json.dumps(payload)
+    assert "evaluation.pdf" not in put[1] + payload["message"]
+    assert keys[0] not in json.dumps(payload)
+    assert config["token"] not in json.dumps(payload)
     with pytest.raises(storage.ConflictError):
         store.write_blob(identifier, b"replacement")
     assert store.read_blob(identifier) == original

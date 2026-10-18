@@ -11,7 +11,7 @@ def create_demo_state(today: date | None = None) -> dict:
     names = ["Alex Example", "Casey Sample", "Morgan Demo", "Taylor Fiction"]
     for i, name in enumerate(names, 1):
         start = date(academic_start.year - i + 1, 7, 1)
-        state = m.save_resident(state, {"name": name, "external_id": f"DEMO-{i:03}", "start_date": start.isoformat(),
+        state = m.save_resident(state, {"name": name, "start_date": start.isoformat(),
                                        "graduation_date": (m.add_months(start, 48)).isoformat(), "coach_name": "Example Faculty Coach",
                                        "aliases": [], "status": "Active"}, "demo")
     for idx, resident in enumerate(state["residents"]):
@@ -26,8 +26,7 @@ def create_demo_state(today: date | None = None) -> dict:
                                 "rotation": specialty + " inpatient", "evaluator": "Example Faculty",
                                 "questions": [{"number": "1", "text": "Describe a strength.", "response": "Progressing", "comment": "Organizes a clear assessment and plan."},
                                               {"number": "2", "text": "Identify a next learning goal.", "response": "Feedback provided", "comment": "Anticipate discharge needs earlier in the admission."}],
-                                "record_mode": "event", "source_locator": "Fictional example row " + str(j + 1),
-                                "external_record_id": f"demo-eval-{specialty}-{j}"})
+                                "record_mode": "event", "source_locator": "Fictional example row " + str(j + 1)})
                 records.append({"resident_name": resident["name"], "category": "milestones", "specialty": specialty,
                                 "date": observed.isoformat(), "period_start": academic_start.isoformat(), "period_end": observed.isoformat(),
                                 "form": specialty + " milestones", "metric": "PC1", "value": min(4, 1.5 + idx * .5 + j * .5),

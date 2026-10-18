@@ -26,6 +26,17 @@ def roster():
     return state
 
 
+@pytest.fixture
+def name_only_roster():
+    state = m.new_state("Synthetic name-only program")
+    for resident in [
+        {"name": "Alex Example", "start_date": "2026-07-01"},
+        {"name": "Brooke Sample", "start_date": "2026-07-01", "aliases": ["B. Sample"]},
+    ]:
+        state = m.save_resident(state, resident, "admin")
+    return state
+
+
 def event(*, name="Alex Example", external_id="NI-101", day="2026-10-01",
           native_id="eval-001", text="A synthetic observation.", **extra):
     rec = {"resident_name": name, "external_id": external_id, "date": day,
@@ -53,6 +64,63 @@ def review_data(**extra):
             "period_start": "2026-07-01", "period_end": "2026-12-31", "review_date": "2027-01-05",
             "fields": {"ccc_decision": "Synthetic recorded CCC decision", "action_plan": "Practice a documented learning goal"},
             **extra}
+
+
+def test_name_only_roster_matches_exact_normalized_names_and_aliases(name_only_roster):
+    state = name_only_roster
+    alex, brooke = state["residents"]
+    assert alex["id"] and brooke["id"] and alex["id"] != brooke["id"]
+    assert not any(resident.get("external_id") for resident in state["residents"])
+    for name in ("Alex Example", "  EXAMPLE, Alex  ", "Exámple, Alex, MD"):
+        assert m.match_resident(state, name) == alex["id"]
+    assert m.match_resident(state, "Brooke Sample") == brooke["id"]
+    assert m.match_resident(state, "B. Sample") == brooke["id"]
+    assert m.validate_state(state) == state
+
+
+def test_same_name_without_source_ids_requires_an_explicit_resident_choice(name_only_roster):
+    state = m.save_resident(name_only_roster, {"name": "Alex Example", "start_date": "2025-07-01"}, "admin")
+    chosen_id = state["residents"][-1]["id"]
+    record = event(external_id="", native_id=None)
+    assert m.match_resident(state, "Example, Alex") is None
+    with pytest.raises(m.ValidationError, match="Match every"):
+        m.prepare_records(state, [record], {})
+    prepared, stats = m.prepare_records(state, [record], {m.mapping_key(record): chosen_id})
+    assert prepared[0]["resident_id"] == chosen_id
+    assert not prepared[0].get("external_id")
+    assert not prepared[0].get("external_record_id")
+    assert stats["new_records"] == 1
+
+
+def test_name_edit_keeps_internal_identity_evidence_and_final_review(name_only_roster):
+    resident_id = m.match_resident(name_only_roster, "Alex Example")
+    original_event = event(external_id="", native_id=None)
+    saved = import_events(name_only_roster, [original_event], label="before-name-edit")
+    finalized = m.save_review(saved, resident_id, review_data(), "reviewer", finalize=True)
+    original_records = copy.deepcopy(finalized["records"])
+    original_review = copy.deepcopy(finalized["reviews"][0])
+    resident = m.resident_by_id(finalized, resident_id)
+    renamed = m.save_resident(finalized, {**resident, "name": "Alex Sample-Example",
+                                        "aliases": [*resident["aliases"], resident["name"]]}, "admin")
+    assert len(renamed["residents"]) == len(finalized["residents"])
+    assert m.resident_by_id(renamed, resident_id)["name"] == "Alex Sample-Example"
+    assert renamed["records"] == original_records
+    assert renamed["reviews"][0] == original_review
+    assert original_review["snapshot_resident"]["name"] == "Alex Example"
+    assert m.match_resident(renamed, "Sample-Example, Alex") == resident_id
+    assert m.match_resident(renamed, "Example, Alex") == resident_id
+
+    # Repeated exports still deduplicate after the roster name changes, and a
+    # later name-only event joins the same history without a source event ID.
+    prepared, stats = m.prepare_records(renamed, [original_event], {})
+    assert prepared == [] and stats["duplicates"] == 1
+    updated = import_events(renamed, [event(name="Alex Sample-Example", external_id="", native_id=None,
+                                           day="2026-11-01")], label="after-name-edit")
+    history = m.records_for(updated, resident_id, "2026-07-01", "2026-12-31")
+    assert len(history) == 2
+    assert {record["resident_id"] for record in history} == {resident_id}
+    assert updated["reviews"][0] == original_review
+    assert m.validate_state(updated) == updated
 
 
 def test_same_names_require_identifier_or_explicit_resolution(roster):

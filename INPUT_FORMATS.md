@@ -2,6 +2,8 @@
 
 Use the original New Innovations export whenever its layout is supported. You do not need to run a notebook, combine files on your computer, or prepare REDCap field names. Choose the report category and specialty, select the report's actual dates, upload it, and review the names, dates, and counts before saving.
 
+Residents are identified by their names in your New Innovations exports. A resident ID, evaluation ID, or REDCap record number is not required. The app creates its own internal resident reference automatically and matches future uploads to the saved name or a confirmed name variation. Optional source IDs are still recognized when an older file contains them, but the blank templates and practice files do not ask you to create any.
+
 The import readers were built from the logic and column names in your supplied notebooks and tested with fictional fixtures. Actual New Innovations source spreadsheets and resident milestone PDFs were not supplied with those notebooks. A current deidentified example of each export is still needed to confirm its layout against the live system. The supplied REDCap PDF describes the existing dashboard; it is not a raw milestone export.
 
 ## Supported files
@@ -14,7 +16,7 @@ CSV, TSV, UTF-16 TAB, modern XLSX, binary XLS, and New Innovations HTML tables s
 | Evaluations, older processed form | `Subject Name`, `Session Date`, `Session`, `Evaluator Name`, `Overall Comments`, and optional question triplets | Each evaluation and all available question content |
 | Self-assessments | `Subject Name`, `Subject Status`, `Evaluation Start Date`, `Evaluation End Date`, `Date Completed`, `Evaluator Name`, `Session`, `[Question N]`, `[Question N Response]`, `[Question N Comment]` | Every form and review date, including more than two reviews in a year |
 | Milestones | `resident_name`, `milestone`, `value`, with `date` or `report_dates`; `training_year` when available | Individual scores by explicit code and specialty; `x`/not assessed remains distinct from zero |
-| Procedures | `ResidentID`, `ResidentLastName`, `ResidentFirstName`, `DatePerformed`, `ResidentStatus`, `Procedure` | Individual dated procedure entries, including repeated procedures on the same day |
+| Procedures | `ResidentLastName`, `ResidentFirstName`, `DatePerformed`, `ResidentStatus`, `Procedure`, with optional source identifiers when present | Individual dated procedure entries, including repeated procedures on the same day |
 | Conference attendance | `Person`, `Category`, `Status`, `% Attended` | Each category's percentage and report period as a snapshot |
 | Duty hours | `Name`, `Start`, `End`, `Hours`, `Work Type`; or the hierarchical `Work Type` report with PGY and resident header rows | Individual shifts, reported hours, actual start/end times, and source details |
 | Duty-hour concerns | `Name`, `Status`, `Log Date`, `Rule`, `Description`, `Comments`, `Rotation`, `Work Type` | All source-reported concerns, without a five-entry limit |
@@ -43,7 +45,7 @@ The `templates` folder contains blank CSV headers for all seven categories and t
 
 For an already prepared aggregate, the standardized long format can use `resident_name,date,metric,value,unit,record_mode,period_start,period_end`. Set `record_mode` to `snapshot` for a source summary rather than an individual event. For example, a cumulative procedure count must be labeled as a snapshot so it is not combined with individual procedure entries. Use the original event-level log whenever available.
 
-The roster uses `name, external_id, start_date, graduation_date, coach_name, status, aliases`. Separate multiple aliases with semicolons. Set start and graduation dates for the resident's actual training plan.
+The roster template uses `name, start_date, graduation_date, coach_name, status, aliases`. Only the name and training start date are required columns. Use the full name shown in New Innovations. Separate multiple aliases with semicolons. Set start and graduation dates for the resident's actual training plan. Existing roster files with an optional `external_id` column remain accepted, but leave it out for name-only exports. REDCap `record_id` and the app's internal `id` are not roster-upload columns.
 
 Everything in `examples` is fictional and is labeled by category. `examples/milestones.csv` includes both specialties, so select Combined to use its row-level `specialty` column. The conference example needs its reporting period selected in the upload screen because the original export style has no date column. Use the examples to practise the workflow before importing real files.
 
