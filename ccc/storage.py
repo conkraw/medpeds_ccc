@@ -1,7 +1,7 @@
 """Authenticated encryption and conservative GitHub persistence.
 
 Plaintext JSON and original uploads exist only in memory in this module.
-GitHub receives Fernet ciphertext in generic files in a private repository.
+GitHub receives Fernet ciphertext in generic files in a public or private repository.
 Reads never interpret an access, network, format, or decryption failure as an
 empty database. Writes use the file SHA the user actually loaded, so two
 sessions cannot silently replace one another's work. There are no retries of
@@ -226,13 +226,13 @@ def _blob_id(value: str) -> str:
 
 
 class GitHubStore:
-    """Small encrypted store in one private GitHub repository.
+    """Small encrypted store in one public or private GitHub repository.
 
     Config keys: owner, repo, branch, token, and optional path (encrypted/ccc.enc).
     Use a fine-grained personal access token restricted to this repository with
     Contents read/write permission. The API confirms actual access, not the
-    permissions merely claimed by a config file. No deletion or public-store
-    fallback is implemented.
+    permissions merely claimed by a config file. Repository visibility does
+    not change encryption or access checks. No deletion is implemented.
     """
 
     def __init__(self, config: Mapping[str, Any], keys: Sequence[str]):
@@ -272,7 +272,7 @@ class GitHubStore:
         self._lock = threading.RLock()
 
     def __repr__(self) -> str:
-        return "<GitHubStore: encrypted private repository>"
+        return "<GitHubStore: encrypted repository>"
 
     def close(self) -> None:
         self._session.close()
@@ -349,8 +349,8 @@ class GitHubStore:
         response = self._request("GET", "")
         self._check_status(response, (200,))
         repo = self._read_json(response)
-        if repo.get("private") is not True:
-            raise StorageError("Encrypted storage requires a private GitHub repository. Set the repository to private before using it.")
+        if type(repo.get("private")) is not bool:
+            raise StorageError("The storage repository metadata could not be verified. No data has been replaced.")
         if str(repo.get("full_name", "")).lower() != f"{self._owner}/{self._repo}".lower():
             raise StorageError("Storage returned a different repository. Check the configured repository name.")
         response = self._request("GET", f"/branches/{quote(self._branch, safe='')}")

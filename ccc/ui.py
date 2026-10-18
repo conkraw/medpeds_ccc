@@ -1111,7 +1111,7 @@ def run() -> None:
         st.stop()
     if state is None:
         st.title("Start the resident dashboard")
-        st.write("The private data repository is connected. No dashboard has been saved at the configured location yet.")
+        st.write("Encrypted storage is connected. No dashboard has been saved at the configured location yet.")
         if _permission("manage"):
             st.caption("If this app should already have resident records, check the repository and path before creating a new dashboard.")
             if st.button("Create an empty resident dashboard", type="primary"):
