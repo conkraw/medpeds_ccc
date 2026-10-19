@@ -66,6 +66,16 @@ def review_data(**extra):
             **extra}
 
 
+@pytest.fixture
+def partial_resident_import(roster):
+    state = m.save_resident(m.new_state(), roster["residents"][0], "admin")
+    records = [event(), event(name="Brooke Sample", external_id="NI-202", native_id="brooke-event")]
+    src = source("partially-imported-file")
+    state, _ = m.import_records(state, records, src, {m.mapping_key(records[1]): "__skip__"}, "admin")
+    state = m.save_resident(state, roster["residents"][1], "admin")
+    return state, records, src
+
+
 def test_name_only_roster_matches_exact_normalized_names_and_aliases(name_only_roster):
     state = name_only_roster
     alex, brooke = state["residents"]
@@ -76,6 +86,102 @@ def test_name_only_roster_matches_exact_normalized_names_and_aliases(name_only_r
     assert m.match_resident(state, "Brooke Sample") == brooke["id"]
     assert m.match_resident(state, "B. Sample") == brooke["id"]
     assert m.validate_state(state) == state
+
+
+def test_remove_accidental_resident_keeps_other_roster_entries_and_audits(roster):
+    before = copy.deepcopy(roster)
+    removed = m.remove_resident(roster, "alex", "admin")
+    assert removed["residents"] == [before["residents"][1]]
+    assert removed["records"] == removed["reviews"] == removed["sources"] == []
+    assert removed["settings"] == before["settings"]
+    assert removed["audit"][:-1] == before["audit"]
+    assert removed["audit"][-1]["action"] == "Resident removed"
+    assert removed["audit"][-1]["actor"] == "admin"
+    assert removed["audit"][-1]["details"] == {
+        "resident_id": "alex", "records_removed": 0, "reviews_removed": 0}
+    assert removed["revision"] == before["revision"] + 1
+    assert m.match_resident(removed, "Alex Example", "NI-101") is None
+    assert m.match_resident(removed, "Example, Alex") is None
+    assert m.validate_state(removed) == removed
+    assert roster == before
+
+
+def test_remove_by_id_preserves_another_resident_with_the_same_name(roster):
+    state = m.save_resident(roster, {"id": "second-alex", "name": "Alex Example",
+                                    "external_id": "NI-303", "start_date": "2025-07-01"}, "admin")
+    other = copy.deepcopy(m.resident_by_id(state, "second-alex"))
+    state = import_events(state, [event(external_id="NI-303")], label="same-name-other-resident")
+    state = m.save_review(state, "second-alex", review_data(), "reviewer", finalize=True)
+    removed = m.remove_resident(state, "alex", "admin")
+    assert m.resident_by_id(removed, "second-alex") == other
+    assert removed["records"] == state["records"]
+    assert removed["reviews"] == state["reviews"]
+    assert removed["sources"] == state["sources"]
+    assert m.match_resident(removed, "Alex Example", "NI-303") == "second-alex"
+    assert m.match_resident(removed, "Alex Example", "NI-101") is None
+
+
+def test_remove_cascades_owned_history_and_preserves_shared_and_excluded_uploads(roster):
+    shared_source = source("shared")
+    shared_source.update({"blob_id": shared_source["id"],
+                          "blob_path": "encrypted/sources/" + shared_source["id"].replace("-", "") + ".enc",
+                          "blob_sha": "a" * 40})
+    state, _ = m.import_records(roster, [event(), event(name="Brooke Sample", external_id="NI-202",
+                                                       native_id="brooke-current")], shared_source, {}, "admin")
+    state = m.save_review(state, "alex", review_data(), "reviewer", finalize=True)
+    review_id = state["reviews"][0]["id"]
+    state = m.reopen_review(state, review_id, "admin", "Synthetic correction")
+    state = m.save_review(state, "alex", state["reviews"][0], "reviewer", finalize=True)
+    state = m.save_review(state, "brooke", review_data(), "reviewer", finalize=True)
+    state = m.save_review(state, "alex", review_data(half="Year end", period_end="2027-06-30",
+                                                      review_date="2027-07-01"), "reviewer")
+    state = import_events(state, [event(native_id="alex-excluded"),
+                                   event(name="Brooke Sample", external_id="NI-202",
+                                         native_id="brooke-excluded")], label="excluded-shared")
+    state = m.deactivate_source(state, state["sources"][-1]["id"], "admin", "Synthetic excluded upload")
+    before = copy.deepcopy(state)
+    assert state["reviews"][0]["snapshot"] and state["reviews"][0]["versions"]
+    assert state["reviews"][0]["history_snapshot"] and state["reviews"][0]["snapshot_resident"]
+    brooke_evidence = m.records_for(state, "brooke", "2026-07-01", "2026-12-31")
+
+    removed = m.remove_resident(state, "alex", "admin")
+
+    assert removed["residents"] == [r for r in before["residents"] if r["id"] == "brooke"]
+    assert removed["records"] == [r for r in before["records"] if r["resident_id"] == "brooke"]
+    assert removed["reviews"] == [r for r in before["reviews"] if r["resident_id"] == "brooke"]
+    assert removed["sources"] == before["sources"]
+    assert [s["active"] for s in removed["sources"]] == [True, False]
+    assert [s["record_count"] for s in removed["sources"]] == [2, 2]
+    assert m.records_for(removed, "brooke", "2026-07-01", "2026-12-31") == brooke_evidence
+    assert m.records_for(removed, "alex", "2026-07-01", "2027-06-30") == []
+    assert removed["audit"][:-1] == before["audit"]
+    assert removed["audit"][-1]["details"] == {
+        "resident_id": "alex", "records_removed": 2, "reviews_removed": 2}
+    assert m.validate_state(removed) == removed
+    assert state == before
+
+    # The candidate remains independent while persistence is pending.
+    removed["sources"][0]["active"] = False
+    removed["reviews"][0]["snapshot"][0]["text"] = "Candidate-only change"
+    assert state == before
+
+
+def test_remove_last_resident_retains_original_upload_reference(roster):
+    state = m.remove_resident(roster, "brooke", "admin")
+    state = import_events(state, [event()], label="only-resident-original")
+    state = m.save_review(state, "alex", review_data(), "reviewer", finalize=True)
+    removed = m.remove_resident(state, "alex", "admin")
+    assert removed["residents"] == removed["records"] == removed["reviews"] == []
+    assert removed["sources"] == state["sources"]
+    assert removed["sources"][0]["active"] is True
+    assert m.validate_state(removed) == removed
+
+
+def test_remove_unknown_resident_rejects_without_mutating_state(roster):
+    before = copy.deepcopy(roster)
+    with pytest.raises(m.ValidationError, match="Choose a resident"):
+        m.remove_resident(roster, "missing-resident", "admin")
+    assert roster == before
 
 
 def test_same_name_without_source_ids_requires_an_explicit_resident_choice(name_only_roster):
@@ -237,6 +343,79 @@ def test_overlapping_export_skips_saved_events_but_keeps_new_native_ids(roster):
     assert prepared[0]["external_record_id"] == "event-2"
     assert stats["duplicates"] == 1
     assert stats["possible_updates"] == 0
+
+
+def test_same_file_partial_completion_requires_explicit_opt_in(partial_resident_import):
+    state, records, src = partial_resident_import
+    before = copy.deepcopy(state)
+    with pytest.raises(m.ValidationError, match="exact file and reporting period are already saved"):
+        m.import_records(state, records, {**src, "id": m.new_id()}, {}, "admin")
+    assert state == before
+
+
+def test_opted_in_partial_import_adds_only_the_previously_skipped_resident(partial_resident_import):
+    state, records, src = partial_resident_import
+    before = copy.deepcopy(state)
+    new_source = {**src, "id": m.new_id()}
+    completed, stats = m.import_records(state, records, new_source, {}, "admin", allow_partial_reimport=True)
+    assert stats == {"duplicates": 1, "possible_updates": 0, "new_records": 1}
+    assert completed["records"][:1] == before["records"]
+    assert len(completed["records"]) == 2
+    added = completed["records"][1]
+    assert added["resident_id"] == "brooke" and added["external_record_id"] == "brooke-event"
+    assert added["source_id"] == new_source["id"]
+    assert completed["sources"][:1] == before["sources"]
+    assert len(completed["sources"]) == 2
+    assert all(s["active"] and s["replaces"] is None and s["record_count"] == 1 for s in completed["sources"])
+    assert completed["sources"][1]["id"] != completed["sources"][0]["id"]
+    assert completed["sources"][1]["sha256"] == completed["sources"][0]["sha256"]
+    assert m.records_for(completed, "alex", "2026-07-01", "2026-12-31") == before["records"]
+    assert completed["audit"][:-1] == before["audit"]
+    assert m.validate_state(completed) == completed
+    assert state == before
+
+
+def test_opted_in_partial_reimport_with_no_new_entries_is_rejected(partial_resident_import):
+    state, records, src = partial_resident_import
+    completed, _ = m.import_records(state, records, {**src, "id": m.new_id()}, {}, "admin",
+                                    allow_partial_reimport=True)
+    before = copy.deepcopy(completed)
+    with pytest.raises(m.ValidationError, match="no new records"):
+        m.import_records(completed, records, {**src, "id": m.new_id()}, {}, "admin",
+                         allow_partial_reimport=True)
+    assert completed == before
+
+
+def test_partial_reimport_option_cannot_bypass_exact_file_replacement_rejection(partial_resident_import):
+    state, records, src = partial_resident_import
+    before = copy.deepcopy(state)
+    with pytest.raises(m.ValidationError, match="exact file and reporting period are already saved"):
+        m.import_records(state, records, {**src, "id": m.new_id()}, {}, "admin",
+                         replace_source_id=src["id"], allow_partial_reimport=True)
+    assert state == before and state["sources"][0]["active"] is True
+
+
+def test_partial_reimport_cannot_reuse_the_original_source_identifier(partial_resident_import):
+    state, records, src = partial_resident_import
+    before = copy.deepcopy(state)
+    with pytest.raises(m.ValidationError, match="upload identifier is already saved"):
+        m.import_records(state, records, src, {}, "admin", allow_partial_reimport=True)
+    assert state == before
+
+
+def test_partial_reimport_keeps_revision_confirmation_required(partial_resident_import):
+    state, records, src = partial_resident_import
+    before = copy.deepcopy(state)
+    revised = [{**records[0], "text": "Synthetic corrected interpretation"}, records[1]]
+    new_source = {**src, "id": m.new_id()}
+    with pytest.raises(m.ValidationError, match="may revise saved evidence"):
+        m.import_records(state, revised, new_source, {}, "admin", allow_partial_reimport=True)
+    assert state == before
+    confirmed, stats = m.import_records(state, revised, new_source, {}, "admin",
+                                        allow_partial_reimport=True, allow_possible_updates=True)
+    assert stats["possible_updates"] == 1 and stats["new_records"] == 2
+    assert confirmed["records"][:1] == before["records"]
+    assert confirmed["sources"][:1] == before["sources"]
 
 
 def test_no_native_id_preserves_two_genuinely_identical_new_events(roster):

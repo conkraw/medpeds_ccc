@@ -266,6 +266,27 @@ def save_resident(state: dict, data: dict, actor: str) -> dict:
     return with_audit(result, actor, "Resident saved", resident_id=item["id"])
 
 
+def remove_resident(state: dict, resident_id: str, actor: str) -> dict:
+    """Remove one resident and their evidence and reviews from the current state.
+
+    Review snapshots and prior versions belong to their containing review and
+    are removed with it. Sources remain intact because one upload can contain
+    several residents; their record counts describe the original import.
+    Existing audit events, encrypted originals, and older backups are retained.
+    The caller must confirm this action and persist the returned candidate
+    before replacing its saved state.
+    """
+    resident_by_id(state, resident_id)
+    result = copy.deepcopy(state)
+    result["residents"] = [r for r in result["residents"] if r["id"] != resident_id]
+    result["records"] = [r for r in result["records"] if r["resident_id"] != resident_id]
+    result["reviews"] = [r for r in result["reviews"] if r["resident_id"] != resident_id]
+    result = with_audit(result, actor, "Resident removed", resident_id=resident_id,
+                        records_removed=len(state["records"]) - len(result["records"]),
+                        reviews_removed=len(state["reviews"]) - len(result["reviews"]))
+    return validate_state(result)
+
+
 def current_pgy(resident: dict, as_of: Any) -> int:
     cutoff = parse_date(as_of)
     start = parse_date(resident.get("start_date"))
@@ -396,13 +417,21 @@ def prepare_records(state: dict, records: list[dict], mappings: dict[str, str]) 
 
 
 def import_records(state: dict, records: list[dict], source: dict, mappings: dict[str, str], actor: str,
-                   *, replace_source_id: str | None = None, allow_possible_updates: bool = False) -> tuple[dict, dict]:
+                   *, replace_source_id: str | None = None, allow_possible_updates: bool = False,
+                   allow_partial_reimport: bool = False) -> tuple[dict, dict]:
+    """Save new evidence, with an explicit additive path for a partial import.
+
+    Completing the same file and reporting period requires the partial-import
+    option and a fresh source identifier. Existing duplicate and revision
+    checks still apply to every row. Replacements retain exact-file rejection.
+    """
     result = copy.deepcopy(state)
     # Hash+context identifies the same uploaded report; different reporting dates
     # remain visible as an explicit potential re-import instead of silent reuse.
     for old in result["sources"]:
         if old.get("active", True) and all(old.get(k) == source.get(k) for k in ("sha256", "kind", "specialty", "period_start", "period_end")):
-            raise ValidationError("This exact file and reporting period are already saved.")
+            if not allow_partial_reimport or replace_source_id is not None:
+                raise ValidationError("This exact file and reporting period are already saved.")
     if replace_source_id:
         previous = next((s for s in result["sources"] if s["id"] == replace_source_id and s.get("active", True)), None)
         if previous is None:
@@ -416,6 +445,8 @@ def import_records(state: dict, records: list[dict], source: dict, mappings: dic
         raise ValidationError("There are no new records to save after matching and duplicate checks.")
     if stats["possible_updates"] and not allow_possible_updates:
         raise ValidationError("Some entries may revise saved evidence. Review the overlaps and confirm before saving.")
+    if allow_partial_reimport and any(s["id"] == source.get("id") for s in result["sources"]):
+        raise ValidationError("This upload identifier is already saved. Process the file again before adding its remaining entries.")
     source = copy.deepcopy(source)
     source.setdefault("id", new_id())
     source.update({"active": True, "uploaded_at": now_iso(), "uploaded_by": actor, "record_count": len(prepared)})

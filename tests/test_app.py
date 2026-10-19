@@ -211,6 +211,244 @@ def test_admin_roster_save_is_persisted_and_available_to_a_new_session(app_facto
     assert next(r for r in reopened.session_state["state"]["residents"] if r["name"] == "Casey Fictional")["id"] == added["id"]
 
 
+def test_remove_resident_requires_confirmation_and_persists_to_new_sessions(app_factory):
+    create, backend = app_factory
+    app = login(create())
+    enter_new_resident(app)
+    by_label(app.button, "Save resident").click().run()
+    removed_id = next(r["id"] for r in app.session_state["state"]["residents"] if r["name"] == "Casey Fictional")
+    by_label(app.selectbox, "Add or edit a resident").set_value(removed_id).run()
+    no_exceptions(app)
+    assert by_label(app.button, "Remove resident").disabled
+    assert any("no saved evidence or CCC reviews" in item.value for item in app.markdown)
+    app.session_state["selected_resident"] = removed_id
+    app.session_state["upload_preview"] = [{"data": b"fictional pending upload"}]
+    app.session_state["upload_preview_context"] = ("fictional",)
+    app.session_state["generated_export"] = {"data": b"fictional prepared report"}
+    by_label(app.checkbox, "I understand and want to remove this resident").check().run()
+    by_label(app.button, "Remove resident").click().run()
+    no_exceptions(app)
+    assert len(backend.saves) == 2
+    assert [r["name"] for r in app.session_state["state"]["residents"]] == ["Alex Fictional"]
+    assert by_label(app.selectbox, "Add or edit a resident").value == "__new__"
+    for key in ("selected_resident", "upload_preview", "upload_preview_context", "generated_export"):
+        assert key not in app.session_state
+    assert app.session_state["state"]["audit"][-1]["action"] == "Resident removed"
+    reopened = login(create(), "viewer")
+    assert [r["name"] for r in reopened.session_state["state"]["residents"]] == ["Alex Fictional"]
+
+
+@pytest.mark.parametrize("failure_type", [StorageError, ConflictError])
+def test_failed_resident_removal_keeps_saved_roster_and_uses_existing_recovery(app_factory, failure_type):
+    create, backend = app_factory
+    app = login(create())
+    navigate(app, "Administration")
+    by_label(app.selectbox, "Add or edit a resident").set_value("resident-alex").run()
+    before = copy.deepcopy(app.session_state["state"])
+    app.session_state["selected_resident"] = "resident-alex"
+    backend.next_failure = failure_type("Synthetic removal save failure.")
+    by_label(app.checkbox, "I understand and want to remove this resident").check().run()
+    by_label(app.button, "Remove resident").click().run()
+    no_exceptions(app)
+    assert app.session_state["state"] == before
+    assert backend.destinations["private-data"] == before
+    assert app.session_state["selected_resident"] == "resident-alex"
+    assert app.session_state["pending_save"]["state"]["residents"] == []
+    assert not backend.saves
+    app.run()
+    if failure_type is StorageError:
+        by_label(app.button, "Retry this save").click().run()
+        no_exceptions(app)
+        assert app.session_state["state"]["residents"] == []
+        assert "selected_resident" not in app.session_state
+        assert "pending_save" not in app.session_state
+        reopened = login(create())
+        assert reopened.session_state["state"]["residents"] == []
+        navigate(reopened, "Resident review")
+        navigate(reopened, "Word reports")
+        no_exceptions(reopened)
+    else:
+        assert not any(button.label == "Retry this save" for button in app.button)
+        by_label(app.checkbox, "I have kept a copy of any changes I need").check().run()
+        by_label(app.button, "Reload saved records").click().run()
+        no_exceptions(app)
+        assert app.session_state["state"] == before
+        assert "pending_save" not in app.session_state
+
+
+class FictionalUpload:
+    def __init__(self, filename, data):
+        self.name = filename
+        self.data = data
+        self.size = len(data)
+
+    def getvalue(self):
+        return self.data
+
+
+@pytest.fixture
+def supplied_uploads(monkeypatch):
+    """Supply bytes at the uploader boundary, while rendering the real widgets.
+
+    AppTest has no browser file-picker control. Parsing, matching, confirmation,
+    batch preparation, and dashboard persistence still use production code.
+    """
+    selected = {}
+    actual_uploader = ui.st.file_uploader
+
+    def uploader(*args, **kwargs):
+        value = actual_uploader(*args, **kwargs)
+        key = kwargs.get("key", "")
+        return selected.get(key, []) if key.startswith("files_") else value
+
+    monkeypatch.setattr(ui.st, "file_uploader", uploader)
+    return selected
+
+
+def fictional_example(filename, *, extra=b""):
+    data = (APP.parent / "examples" / filename).read_bytes().replace(b"Example", b"Fictional") + extra
+    return FictionalUpload(filename, data)
+
+
+def confirm_and_save_upload(app):
+    by_label(app.checkbox, "Keep an encrypted copy of each original file").uncheck()
+    by_label(app.checkbox, "The included files, resident matches, dates, and any warnings are correct").check().run()
+    assert not by_label(app.button, "Save to resident dashboards").disabled
+    by_label(app.button, "Save to resident dashboards").click().run()
+    no_exceptions(app)
+
+
+@pytest.mark.parametrize("group,filename,specialty,category", [
+    ("eval", "evaluations_medicine.csv", "Medicine", "evaluations"),
+    ("milestones", "milestones.csv", "Combined", "milestones"),
+    ("activity", "procedures.csv", "Medicine", "procedures"),
+    ("duty", "duty_hours.csv", "Combined", "duty_hours"),
+])
+def test_each_upload_area_accepts_one_file_with_every_other_area_empty(app_factory, supplied_uploads, group, filename, specialty, category):
+    create, backend = app_factory
+    app = login(create())
+    navigate(app, "Upload files")
+    assert by_label(app.button, "Process files").disabled
+    supplied_uploads[f"files_{group}_0"] = [fictional_example(filename)]
+    by_label(app.radio, "These files are for").set_value(specialty).run()
+    assert not by_label(app.button, "Process 1 file").disabled
+    by_label(app.button, "Process 1 file").click().run()
+    no_exceptions(app)
+    assert len(app.session_state["upload_preview"]) == 1
+    assert not app.error
+    assert by_label(app.button, "Save to resident dashboards").disabled
+    assert not backend.saves
+    confirm_and_save_upload(app)
+    state = app.session_state["state"]
+    assert len(backend.saves) == 1 and len(state["sources"]) == 1
+    assert state["records"] and {r["category"] for r in state["records"]} == {category}
+    assert {r["resident_id"] for r in state["records"]} == {"resident-alex"}
+    assert "upload_preview" not in app.session_state
+    assert by_label(app.button, "Process files").disabled
+    reopened = login(create(), "viewer")
+    assert reopened.session_state["state"]["records"] == state["records"]
+
+
+def test_later_upload_adds_evidence_while_duplicate_only_files_do_not_block_it(app_factory, supplied_uploads):
+    create, backend = app_factory
+    supplied_uploads["files_eval_0"] = [fictional_example("evaluations_medicine.csv")]
+    app = login(create())
+    navigate(app, "Upload files")
+    by_label(app.button, "Process 1 file").click().run()
+    confirm_and_save_upload(app)
+    earlier = copy.deepcopy(app.session_state["state"]["records"])
+
+    supplied_uploads["files_eval_1"] = [fictional_example("evaluations_medicine.csv", extra=b"\n")]
+    supplied_uploads["files_activity_1"] = [fictional_example("procedures.csv")]
+    app.run()
+    by_label(app.button, "Process 2 files").click().run()
+    no_exceptions(app)
+    confirm_and_save_upload(app)
+    state = app.session_state["state"]
+    assert state["records"][:len(earlier)] == earlier
+    assert len(state["sources"]) == 2
+    assert sum(r["category"] == "procedures" for r in state["records"]) == 2
+    assert any("Skipped 1 file with no new entries" in item.value for item in app.success)
+
+    # Another changed-byte export of the same evidence is a no-op, not an error.
+    before = copy.deepcopy(state)
+    supplied_uploads["files_eval_2"] = [fictional_example("evaluations_medicine.csv", extra=b"\n\n")]
+    app.run()
+    by_label(app.button, "Process 1 file").click().run()
+    no_exceptions(app)
+    assert not any(button.label == "Save to resident dashboards" for button in app.button)
+    assert app.session_state["state"] == before
+    assert len(backend.saves) == 2
+    assert not app.error
+    assert any("No new entries to save" in item.value for item in app.info)
+
+
+def test_identical_file_can_complete_an_earlier_import_after_a_resident_was_skipped(app_factory, supplied_uploads):
+    create, backend = app_factory
+    data = ("resident_name,date,metric,value,text,form,evaluator,rotation\n"
+            "Alex Fictional,2026-09-01,Overall,3,Alex observation,Faculty,Teacher,Ward\n"
+            "Brooke Fictional,2026-09-01,Overall,4,Brooke observation,Faculty,Teacher,Ward\n").encode()
+    file = FictionalUpload("two-residents.csv", data)
+    supplied_uploads["files_eval_0"] = [file]
+    app = login(create())
+    navigate(app, "Upload files")
+    by_label(app.button, "Process 1 file").click().run()
+    by_label(app.selectbox, "Brooke Fictional").set_value("__skip__").run()
+    confirm_and_save_upload(app)
+    earlier = copy.deepcopy(app.session_state["state"]["records"])
+    assert len(earlier) == 1 and earlier[0]["resident_id"] == "resident-alex"
+
+    navigate(app, "Administration")
+    by_label(app.text_input, "Resident name").set_value("Brooke Fictional")
+    by_label(app.button, "Save resident").click().run()
+    brooke_id = next(r["id"] for r in app.session_state["state"]["residents"] if r["name"] == "Brooke Fictional")
+    supplied_uploads["files_eval_1"] = [file]
+    navigate(app, "Upload files")
+    by_label(app.button, "Process 1 file").click().run()
+    no_exceptions(app)
+    assert any("This file was uploaded before" in item.value for item in app.info)
+    assert by_label(app.selectbox, "Brooke Fictional").value == brooke_id
+    confirm_and_save_upload(app)
+    state = app.session_state["state"]
+    assert state["records"][:1] == earlier
+    assert len(state["records"]) == len(state["sources"]) == 2
+    assert state["records"][-1]["resident_id"] == brooke_id
+    assert state["sources"][0]["sha256"] == state["sources"][1]["sha256"]
+
+    before = copy.deepcopy(state)
+    supplied_uploads["files_eval_2"] = [file]
+    app.run()
+    by_label(app.button, "Process 1 file").click().run()
+    no_exceptions(app)
+    assert any("No new entries to save" in item.value for item in app.info)
+    assert not any(button.label == "Save to resident dashboards" for button in app.button)
+    assert app.session_state["state"] == before
+    assert len(backend.saves) == 3
+
+
+def test_changed_entries_across_new_files_require_an_available_confirmation(app_factory, supplied_uploads):
+    create, backend = app_factory
+    header = "resident_name,date,metric,value,text,form,evaluator,rotation\n"
+    original = (header + "Alex Fictional,2026-09-01,Overall,3,Original observation,Faculty,Teacher,Ward\n").encode()
+    changed = (header + "Alex Fictional,2026-09-01,Overall,4,Changed observation,Faculty,Teacher,Ward\n").encode()
+    supplied_uploads["files_eval_0"] = [FictionalUpload("first.csv", original), FictionalUpload("changed.csv", changed)]
+    app = login(create())
+    navigate(app, "Upload files")
+    by_label(app.button, "Process 2 files").click().run()
+    no_exceptions(app)
+    overlap = "I checked overlapping entries and want to keep any remaining revisions as additional evidence"
+    assert not by_label(app.checkbox, overlap).disabled
+    assert any("1 entry overlaps" in item.value for item in app.warning)
+    by_label(app.checkbox, "The included files, resident matches, dates, and any warnings are correct").check().run()
+    assert by_label(app.button, "Save to resident dashboards").disabled
+    assert not backend.saves
+    by_label(app.checkbox, overlap).check().run()
+    confirm_and_save_upload(app)
+    assert len(app.session_state["state"]["records"]) == 2
+    assert app.session_state["state"]["records"][1]["possible_revision"] is True
+    assert len(backend.saves) == 1
+
+
 def test_reviewer_saves_draft_then_finalizes_its_evidence_snapshot(app_factory):
     create, backend = app_factory
     app = login(create(), "reviewer")

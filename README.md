@@ -4,6 +4,22 @@ This app replaces the repeated REDCap dashboards and Jupyter conversion steps wi
 
 The implementation is ready for a test deployment. It has been tested with fictional data and the input structures described in the supplied notebooks. Current raw New Innovations exports and the target GitHub/Streamlit accounts were not available for live acceptance testing. Complete the short acceptance check below before introducing real resident records.
 
+### Upload files as they become available
+
+Version 1.0.4 makes each of the four upload areas explicitly optional. One file is enough. Add it to the appropriate area, choose the specialty and dates, and select **Process 1 file**. Review the parsed entries and resident matches, confirm them, and select **Save to resident dashboards**. The other upload areas can stay empty. The selected files clear after a successful save, ready for the next upload.
+
+Later uploads add to the saved evidence. You do not need to upload older reports again or supply a file for a category with no new information. Exact saved entries are skipped. A file containing only already saved entries no longer prevents another file in the same batch from adding new evidence. If none of the selected files has new entries, the app tells you and makes no save. Explicit complete replacements still require the existing replacement checks.
+
+If you previously skipped a resident in a shared report, you can upload the identical file again after adding or matching that resident. The app adds only the newly matched entries. The preview also identifies changed entries across files in the same batch, so any needed confirmation is available before saving.
+
+### Remove a resident entered by mistake
+
+Open **Administration**, select **Residents**, and choose the resident under **Add or edit a resident**. Expand **Remove this resident**. Check the displayed name and the number of saved evidence entries and CCC reviews, confirm, and select **Remove resident**.
+
+Removal deletes that resident from the current roster and dashboards, together with their evidence and CCC reviews, including all versions of those reviews. Other residents and shared uploads are preserved. The action is saved through the existing encrypted storage and conflict checks. A failed save leaves the last saved records intact and offers the existing recovery controls.
+
+Original encrypted upload files, older backups, prior repository versions, and audit history are retained. This action does not erase every historical copy of the resident's information. To retain a real resident's accessible history, change their status to **Inactive** rather than removing them.
+
 ### Resident names, without manually assigned IDs
 
 Use the resident's name from New Innovations. No New Innovations ID or REDCap record ID is required. Version 1.0.3 puts names first in the roster, upload matching, and report selection. The templates and fictional examples do not require you to supply resident or evaluation IDs.
@@ -27,19 +43,19 @@ The excerpted build log did not contain a final failure, so it cannot establish 
 | Screen | Daily purpose |
 | --- | --- |
 | Program dashboard | See residents, training years, evaluation counts, latest evidence and reviews, and evidence that needs checking. |
-| Upload files | Four clearly labeled upload areas for evaluations, milestones, activities, and duty hours. Review each file and match residents before saving. |
+| Upload files | Four optional upload areas for evaluations, milestones, activities, and duty hours. Process one file or any available group, then review and save. |
 | Resident review | Read one resident's evidence, specialty-specific milestone history, CCC notes, and all eight checkpoints. |
 | Word reports | Prepare a progress report or CCC letter for one resident, or Word files for a group. Password-to-open protection is the default. |
-| Administration | Maintain the roster, correct uploads, download encrypted backups, restore a backup, and get templates. |
+| Administration | Add, edit, or remove residents, correct uploads, download encrypted backups, restore a backup, and get templates. |
 
 Medicine and Pediatrics retain their own forms, questions, scores, and source labels. They appear within the same resident record and are never averaged into one cross-specialty milestone score. Combined reports remain a separate classification.
 
 ## Daily administrator routine
 
-1. Download the required reports from New Innovations.
+1. Download whichever reports are ready in New Innovations.
 2. Open **Upload files** and select Medicine, Pediatrics, or Combined. Choose the actual reporting dates.
-3. Add the files to the four upload areas. Select the appropriate report type within Evaluations, Activities, and Duty hours.
-4. Select **Review these files**. Read warnings and check the displayed entries. Files with parsing errors cannot be accepted.
+3. Add one or more files to the appropriate upload areas and leave unused areas empty. Select the appropriate report type within Evaluations, Activities, and Duty hours.
+4. Select **Process 1 file** or the button showing your selected file count. Read warnings and check the displayed entries. Files with parsing errors cannot be accepted.
 5. Confirm every resident name match. Save name variations only when you are sure they refer to the same resident. No record ID is required.
 6. Select **Save to resident dashboards** and wait for the saved message. Parsed data and, by default, copies of the original files are encrypted before GitHub receives them.
 7. Open **Resident review** or **Word reports**.

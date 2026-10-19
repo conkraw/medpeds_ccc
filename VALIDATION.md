@@ -1,5 +1,21 @@
 # Validation record
 
+## Resident removal and optional uploads, version 1.0.4
+
+On October 19, 2026 UTC, the complete suite passed on Python 3.14.8: 256 tests and eight subtests in 10.55 seconds. The targeted model, upload workflow, and Streamlit checks passed separately with 92 tests in 7.54 seconds. All checks used fictional data and simulated persistence, with real network requests blocked in the application tests.
+
+Resident removal is limited to the chosen internal resident ID. It removes the current roster entry and that resident's evidence and reviews, including contained final snapshots and prior review versions. It preserves same-name residents with different IDs, shared and excluded upload metadata, original encrypted-file references, and other residents' evidence and reviews. The input state remains unchanged until the candidate is saved. The action appends an audit event with the removed evidence and review counts.
+
+Application checks verify the named removal confirmation, a disabled removal button before confirmation, persistence in a new session, clearing stale selections and prepared downloads, successful removal of the last resident, and safe handling of both recoverable storage failures and conflicting saves. Original uploads, older backups, repository history, and prior audit events are retained. Removal does not claim to purge historical copies.
+
+Each of the four upload areas was tested with one file while the other three were empty. The tests use the actual parser, matching and confirmation controls, batch preparation, and dashboard persistence. AppTest cannot operate a browser's file picker, so fictional bytes are supplied at that boundary while the real upload widgets render. These checks are not a live-browser or live-GitHub acceptance test.
+
+Later uploads preserve earlier evidence. A duplicate-only export can appear before or after a new file without blocking it. An all-duplicate or explicitly skipped batch creates no source, blob, or audit entry. Invalid parsing, unresolved residents, or unconfirmed changed evidence leave the original state unchanged. Explicit complete replacements retain replacement validation and cannot silently omit resident rows by marking them skipped. Successful saves clear the selected files, and each new preview requires fresh acknowledgement.
+
+Additional checks cover completing a prior partial import from the identical file and reporting period after adding a previously skipped resident. The original resident's evidence and source stay unchanged, and only the missing entries are added under a fresh source reference. A subsequent complete reimport creates no save. Default model duplicate rejection and explicit replacement restrictions remain in place. The preview and save controls use the same sequential batch logic, so changed entries across two newly selected files are identified before saving and require an enabled, explicit confirmation.
+
+The earlier name-based roster, encrypted public/private repository support, password protection, and Python 3.14 dependency correction are retained. No data migration or secrets changes are required for this update. The live GitHub repository and Streamlit deployment were not changed from this workspace.
+
 ## Resident names without source IDs, version 1.0.3
 
 On October 18, 2026 UTC, the complete suite passed on Python 3.14.8: 221 tests and eight subtests in 11.13 seconds. These checks used synthetic data and simulated storage responses.

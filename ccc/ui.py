@@ -175,6 +175,25 @@ def _actor() -> str:
     return st.session_state.get("identity", {}).get("username", "demo")
 
 
+def _reset_uploads() -> None:
+    st.session_state.pop("upload_preview", None)
+    st.session_state.pop("upload_preview_context", None)
+    st.session_state["upload_generation"] = st.session_state.get("upload_generation", 0) + 1
+
+
+def _clear_removed_resident_state(removed_ids: set[str]) -> None:
+    """Discard selections and previews that can refer to a removed resident."""
+    _reset_uploads()
+    for key in list(st.session_state):
+        if key in {"selected_resident", "resident_page_picker", "export_resident", "roster_selection"}:
+            if st.session_state[key] in removed_ids:
+                st.session_state.pop(key, None)
+        elif key.startswith(("map_", "replace_", "include_")):
+            st.session_state.pop(key, None)
+        elif key.startswith(("review_", "confirm_remove_")) and any(rid in key for rid in removed_ids):
+            st.session_state.pop(key, None)
+
+
 def _load(store: GitHubStore) -> dict | None:
     if "state" not in st.session_state:
         with st.spinner("Opening saved resident records…"):
@@ -201,6 +220,10 @@ def _persist(candidate: dict, store: GitHubStore, message: str) -> bool:
                                              "error": str(exc)}
         st.error("Not saved. " + str(exc))
         return False
+    previous = st.session_state.get("state") or {}
+    removed_ids = {r["id"] for r in previous.get("residents", [])} - {r["id"] for r in candidate["residents"]}
+    if removed_ids:
+        _clear_removed_resident_state(removed_ids)
     st.session_state["state"] = candidate
     st.session_state["sha"] = sha
     st.session_state["notice"] = message
@@ -347,7 +370,7 @@ def _program_dashboard(state: dict) -> None:
             items = sorted(state["sources"], key=lambda x: x.get("uploaded_at", ""), reverse=True)[:10]
             st.dataframe(pd.DataFrame([{"File": s.get("name", ""), "Category": m.CATEGORIES.get(s.get("kind"), ""),
                                          "Specialty": s.get("specialty", ""), "Through": s.get("period_end", ""),
-                                         "Entries": s.get("record_count", 0), "Status": "Active" if s.get("active", True) else "Excluded"} for s in items]),
+                                         "Entries at upload": s.get("record_count", 0), "Status": "Active" if s.get("active", True) else "Excluded"} for s in items]),
                          hide_index=True, width="stretch")
 
 
@@ -584,43 +607,50 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         st.info("An administrator can add files.")
         return
     from ccc.importers import parse_upload
+    from ccc.upload_workflow import prepare_upload_batch
     st.header("Upload files")
-    st.write("Choose the specialty and reporting dates, add the New Innovations files, then review the import.")
+    st.write("Upload whichever files are ready. One file is enough. Leave the other areas empty and add more files later.")
     if not state["residents"]:
         st.info("First add the resident roster under Administration so names can be matched correctly.")
         return
     specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
     st.caption("Upload Medicine and Pediatrics files as separate batches. Choose Combined for shared administrative reports.")
     first, last = _range_controls(state, prefix="upload_range")
+    generation = st.session_state.get("upload_generation", 0)
     groups = []
     cols = st.columns(4)
     with cols[0], st.container(border=True):
-        st.subheader("1. Evaluations")
+        st.subheader("Evaluations")
         kind = st.selectbox("Evaluation report", ["evaluations", "self_assessments"], format_func=lambda x: m.CATEGORIES[x], key="kind_eval")
-        files = st.file_uploader("Add evaluation files", type=["csv", "xlsx", "xls", "tab", "tsv"], accept_multiple_files=True, key="files_eval")
+        files = st.file_uploader("Add evaluation files", type=["csv", "xlsx", "xls", "tab", "tsv"], accept_multiple_files=True, key=f"files_eval_{generation}")
         groups.append((kind, files))
-        st.caption("Faculty evaluations or resident self-assessments.")
+        st.caption("Optional. Faculty evaluations or resident self-assessments.")
     with cols[1], st.container(border=True):
-        st.subheader("2. Milestones")
+        st.subheader("Milestones")
         st.caption("Medicine or Pediatrics")
-        files = st.file_uploader("Add milestone files", type=["pdf", "csv", "xlsx", "xls"], accept_multiple_files=True, key="files_milestones")
+        files = st.file_uploader("Add milestone files", type=["pdf", "csv", "xlsx", "xls"], accept_multiple_files=True, key=f"files_milestones_{generation}")
         groups.append(("milestones", files))
-        st.caption("PDFs with labeled scores, or a spreadsheet export.")
+        st.caption("Optional. PDFs with labeled scores, or a spreadsheet export.")
     with cols[2], st.container(border=True):
-        st.subheader("3. Activities")
+        st.subheader("Activities")
         kind = st.selectbox("Activity report", ["procedures", "conferences"], format_func=lambda x: m.CATEGORIES[x], key="kind_activity")
-        files = st.file_uploader("Add activity files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key="files_activity")
+        files = st.file_uploader("Add activity files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_activity_{generation}")
         groups.append((kind, files))
-        st.caption("Procedure logs or conference attendance.")
+        st.caption("Optional. Procedure logs or conference attendance.")
     with cols[3], st.container(border=True):
-        st.subheader("4. Duty hours")
+        st.subheader("Duty hours")
         kind = st.selectbox("Duty-hour report", ["duty_hours", "duty_violations"], format_func=lambda x: "Shift log" if x == "duty_hours" else "Violation report", key="kind_duty")
-        files = st.file_uploader("Add duty-hour files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key="files_duty")
+        files = st.file_uploader("Add duty-hour files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_duty_{generation}")
         groups.append((kind, files))
-        st.caption("New Innovations shift logs and reported concerns.")
+        st.caption("Optional. New Innovations shift logs and reported concerns.")
     count = sum(len(files) for _, files in groups)
+    if count:
+        st.caption(f"{count} file{'s' if count != 1 else ''} selected. Empty upload areas do not need a file.")
+    else:
+        st.caption("Add at least one file to process. You do not need every report type.")
     upload_context = (specialty, first, last, tuple((kind, f.name, hashlib.sha256(f.getvalue()).hexdigest()) for kind, files in groups for f in files))
-    if st.button("Review these files", type="primary", disabled=count == 0, width="stretch"):
+    process_label = f"Process {count} file{'s' if count != 1 else ''}" if count else "Process files"
+    if st.button(process_label, type="primary", disabled=count == 0, width="stretch"):
         if count > 30 or sum(f.size for _, files in groups for f in files) > 60 * 1024 * 1024:
             st.error("Add up to 30 files and 60 MB in one batch. Each file can be up to 15 MB.")
             return
@@ -632,9 +662,9 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                     result = parse_upload(file.name, data, kind, specialty, period_start=first, period_end=last)
                     source = {"id": m.new_id(), "name": file.name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
                               "kind": kind, "specialty": specialty, "period_start": first, "period_end": last, "profile": result.profile}
-                    duplicate = any(s.get("active", True) and all(s.get(k) == source[k] for k in ("sha256", "kind", "specialty", "period_start", "period_end")) for s in state["sources"])
+                    previously_uploaded = any(s.get("active", True) and all(s.get(k) == source[k] for k in ("sha256", "kind", "specialty", "period_start", "period_end")) for s in state["sources"])
                     previews.append({"source": source, "data": data, "records": result.records, "errors": result.errors,
-                                     "warnings": result.warnings, "duplicate": duplicate})
+                                     "warnings": result.warnings, "previously_uploaded": previously_uploaded})
         st.session_state["upload_preview"] = previews
         st.session_state["upload_preview_context"] = upload_context
     previews = st.session_state.get("upload_preview", [])
@@ -645,7 +675,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         return
     st.subheader("Review before saving")
     if st.session_state.get("upload_preview_context") != upload_context:
-        st.warning("The files, report types, specialty or dates have changed. Select Review these files again to update the preview. If you returned from another page, add the same files again.")
+        st.warning("The files, report types, specialty or dates have changed. Process the selected files again to update the preview. If you returned from another page, add the same files again.")
         return
     st.info("Not saved yet. Check the files, resident names, and reporting dates below.")
     included = []
@@ -653,9 +683,8 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         source = preview["source"]
         with st.container(border=True):
             st.text(source["name"])
-            if preview["duplicate"]:
-                st.success("This file and period are already saved. It will be skipped.")
-                continue
+            if preview.get("previously_uploaded", preview.get("duplicate", False)):
+                st.info("This file was uploaded before. Saved entries will be skipped, and any remaining entries can be added after matching the residents.")
             for error in preview["errors"]:
                 st.error(_escape(error))
             for warning in preview["warnings"]:
@@ -669,6 +698,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 with st.expander("Show parsed entries"):
                     st.dataframe(_evidence_table(preview["records"]), hide_index=True, width="stretch")
     if not included:
+        st.info("Include at least one readable file to save. You can leave files with errors out of this batch.")
         return
     all_records = [r for p in included for r in p["records"]]
     names = {}
@@ -702,33 +732,41 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             replacements[src["id"]] = st.selectbox("Replacement for " + _escape(src["name"]), ["__none__", *labels],
                                                     format_func=lambda x: "Add as a new upload" if x == "__none__" else labels[x], key="replace_" + src["id"])
     possible = 0
+    preview_problem = False
     try:
-        _, stats = m.prepare_records(state, all_records, mappings)
+        batch_preview = prepare_upload_batch(state, included, mappings, _actor(), replacements=replacements,
+                                             allow_possible_updates=True)
+        stats = batch_preview.stats
         possible = stats["possible_updates"]
-        st.caption(f"{stats['new_records']} new entries before any selected replacement; {stats['duplicates']} exact saved duplicates will be skipped.")
+        st.caption(f"{stats['new_records']} new entries after matching and any selected replacements; {stats['duplicates']} duplicate entries will be skipped.")
+        if not batch_preview.saved_source_ids:
+            st.info("No new entries to save. The selected entries are already saved or were set to skip.")
+            return
         if possible:
-            st.warning(f"{possible} entries resemble saved evidence with changed content. Choose a complete replacement above, or confirm they should be kept as additional evidence.")
-    except m.ValidationError:
-        pass
-    allow_updates = st.checkbox("I checked overlapping entries and want to keep any remaining revisions as additional evidence", disabled=possible == 0)
-    acknowledged = st.checkbox("The included files, resident matches, dates, and any warnings are correct")
-    if st.button("Save to resident dashboards", type="primary", disabled=not acknowledged or "__choose__" in mappings.values(), width="stretch"):
+            overlap_label = "entry overlaps" if possible == 1 else "entries overlap"
+            st.warning(f"{possible} {overlap_label} saved evidence or another selected file with changed content. Review the overlaps before confirming they should be kept as additional evidence.")
+    except m.ValidationError as exc:
+        preview_problem = True
+        st.error(str(exc))
+    preview_id = hashlib.sha256(json.dumps({"sources": [p["source"]["id"] for p in included],
+                                           "mappings": mappings, "replacements": replacements}, sort_keys=True).encode()).hexdigest()[:16]
+    allow_updates = st.checkbox("I checked overlapping entries and want to keep any remaining revisions as additional evidence", disabled=possible == 0, key="allow_updates_" + preview_id)
+    acknowledged = st.checkbox("The included files, resident matches, dates, and any warnings are correct", key="ack_upload_" + preview_id)
+    if st.button("Save to resident dashboards", type="primary", disabled=not acknowledged or preview_problem or "__choose__" in mappings.values() or (possible > 0 and not allow_updates), width="stretch"):
         if st.session_state.get("pending_save"):
             st.error("Resolve the earlier save problem before importing another batch.")
             return
         try:
-            candidate = copy.deepcopy(state)
-            saved_sources = []
-            for preview in included:
-                source = copy.deepcopy(preview["source"])
-                source["warnings"] = list(preview["warnings"])
-                replace_id = replacements.get(source["id"])
-                candidate, stats = m.import_records(candidate, preview["records"], source, mappings, _actor(),
-                                                     replace_source_id=replace_id if replace_id != "__none__" else None,
-                                                     allow_possible_updates=allow_updates)
-                saved_sources.append((preview, source["id"]))
+            batch = prepare_upload_batch(state, included, mappings, _actor(), replacements=replacements,
+                                         allow_possible_updates=allow_updates)
+            if not batch.saved_source_ids:
+                st.info("No new entries to save. The selected entries are already saved or were set to skip.")
+                return
+            candidate = batch.candidate
+            saved_sources = [(p, p["source"]["id"]) for p in included if p["source"]["id"] in batch.saved_source_ids]
             if remember:
-                for key, record in names.items():
+                saved_names = {m.mapping_key(r): r for p, _ in saved_sources for r in p["records"]}
+                for key, record in saved_names.items():
                     target = mappings[key]
                     if target not in roster_ids or not record.get("resident_name"):
                         continue
@@ -746,8 +784,13 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                         path, sha = store.write_blob(source_id, preview["data"])
                         src = next(s for s in candidate["sources"] if s["id"] == source_id)
                         src.update({"blob_id": source_id, "blob_path": path, "blob_sha": sha})
-            if _persist(candidate, store, f"Saved {len(saved_sources)} upload(s). Resident dashboards are updated."):
-                st.session_state.pop("upload_preview", None)
+            count_saved = len(saved_sources)
+            message = f"Saved {count_saved} file{'s' if count_saved != 1 else ''}. Resident dashboards are updated."
+            if batch.skipped_source_ids:
+                count_skipped = len(batch.skipped_source_ids)
+                message += f" Skipped {count_skipped} file{'s' if count_skipped != 1 else ''} with no new entries."
+            if _persist(candidate, store, message):
+                _reset_uploads()
                 st.rerun()
         except (m.ValidationError, StorageError) as exc:
             st.error("Not saved to the dashboard. " + str(exc))
@@ -889,7 +932,10 @@ def _roster(state: dict, store: GitHubStore) -> None:
                                     "Graduation": r.get("graduation_date", ""), "Status": r.get("status", "Active")} for r in existing]), hide_index=True, width="stretch")
     lookup = {r["id"]: r for r in existing}
     labels = _resident_labels(existing)
-    chosen = st.selectbox("Add or edit a resident", ["__new__", *lookup], format_func=lambda x: "Add a resident" if x == "__new__" else labels[x])
+    options = ["__new__", *lookup]
+    if st.session_state.get("roster_selection", "__new__") not in options:
+        st.session_state.pop("roster_selection", None)
+    chosen = st.selectbox("Add or edit a resident", options, format_func=lambda x: "Add a resident" if x == "__new__" else labels[x], key="roster_selection")
     item = lookup.get(chosen, {})
     with st.form("roster_form_" + chosen):
         name = st.text_input("Resident name", value=item.get("name", ""))
@@ -914,6 +960,26 @@ def _roster(state: dict, store: GitHubStore) -> None:
                 st.rerun()
         except m.ValidationError as exc:
             st.error(str(exc))
+    if item:
+        with st.expander("Remove this resident"):
+            record_count = sum(r["resident_id"] == chosen for r in state["records"])
+            review_count = sum(r["resident_id"] == chosen for r in state["reviews"])
+            st.text(f"Resident: {item['name']}")
+            if record_count or review_count:
+                evidence_label = "entry" if record_count == 1 else "entries"
+                review_label = "review" if review_count == 1 else "reviews"
+                st.warning(f"This removes the resident, {record_count} saved evidence {evidence_label}, and {review_count} CCC {review_label} from the dashboard, including all saved versions of those reviews.")
+            else:
+                st.write("This resident has no saved evidence or CCC reviews. Removing them deletes this roster entry.")
+            st.caption("For a real resident whose history should stay available, change their status to Inactive instead. Removal keeps original encrypted uploads, older backups, and previous repository versions.")
+            confirmed = st.checkbox("I understand and want to remove this resident", key=f"confirm_remove_{chosen}_{state['revision']}")
+            if st.button("Remove resident", disabled=not confirmed or bool(st.session_state.get("pending_save"))):
+                try:
+                    candidate = m.remove_resident(state, chosen, _actor())
+                    if _persist(candidate, store, "Resident removed. The roster and dashboards are updated."):
+                        st.rerun()
+                except m.ValidationError as exc:
+                    st.error(str(exc))
     with st.expander("Add the roster from a CSV"):
         st.caption("The roster needs the resident's name and training start date. Dates use YYYY-MM-DD. Existing residents are matched by name or a saved name variation before updating. No record ID is required.")
         uploaded = st.file_uploader("Roster CSV", type=["csv"], key="roster_upload")
@@ -1045,7 +1111,7 @@ def _administration(state: dict, store: GitHubStore, keys: list[str], users: dic
         st.caption(f"App version {__version__} · No automatic readiness or duty-hour compliance decisions.")
     with tabs[3]:
         st.subheader("Daily routine")
-        st.markdown("1. Export the reports from New Innovations.\n2. Open Upload files and choose the specialty and dates.\n3. Review the entries and match the residents, then save.\n4. Open Resident review to review evidence and document the CCC discussion.\n5. Open Word reports to prepare reports or letters.")
+        st.markdown("1. Export whichever reports are ready in New Innovations.\n2. Open Upload files, choose the specialty and dates, and add one or more files. Leave unused areas empty.\n3. Process the selected files, review the entries and resident matches, then save.\n4. Open Resident review to review evidence and document the CCC discussion.\n5. Open Word reports to prepare reports or letters.")
         st.subheader("Compatibility templates")
         st.caption("Use these only when the standard export is unavailable or a PDF has no reliable score labels. Keep one resident or observation per row and use YYYY-MM-DD dates.")
         templates = Path(__file__).resolve().parents[1] / "templates"
