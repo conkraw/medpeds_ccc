@@ -1,7 +1,7 @@
 """Fictional examples only. This module never reads or writes a repository."""
 from __future__ import annotations
 from datetime import date
-from ccc import model as m
+from ccc import annual, model as m
 
 
 def create_demo_state(today: date | None = None) -> dict:
@@ -50,6 +50,22 @@ def create_demo_state(today: date | None = None) -> dict:
                 source = {"name": f"fictional_{idx}_{kind}_{specialty}.csv", "sha256": f"fictional-{idx}-{kind}-{specialty}",
                           "kind": kind, "specialty": specialty, "period_start": academic_start.isoformat(), "period_end": today.isoformat()}
                 state, _ = m.import_records(state, selected, source, {}, "demo")
+        for pgy in range(1, idx + 2):
+            yearly = annual.default_progress(resident, pgy, today)
+            current_year = pgy == idx + 1
+            yearly["fields"].update({
+                "pediatrics_ite_score": 55 + 4 * pgy,
+                "pediatrics_ite_expected_pass_rate": 65 + 6 * pgy,
+                "medicine_ite_score": 60 + 3 * pgy,
+                "medicine_ite_percentile": 48 + 8 * pgy,
+                "adult_clinic_count": 24 if current_year else 120 + 25 * pgy,
+                "pediatric_clinic_count": 21 if current_year else 105 + 20 * pgy,
+                "observed_encounter_1": True,
+                "observed_encounter_2": True,
+                "observed_encounter_3": False if current_year else True,
+                "observed_encounter_4": None if current_year else True,
+            })
+            state = annual.save_progress(state, resident["id"], yearly, "demo")
         review = {"pgy": idx + 1, "half": "Midyear", "academic_year": m.academic_year(today), "period_start": academic_start.isoformat(), "period_end": today.isoformat(),
                   "review_date": today.isoformat(), "fields": {
                       "overall_impression": "Fictional example: making progress in both specialties, with an ongoing goal of planning transitions earlier.",

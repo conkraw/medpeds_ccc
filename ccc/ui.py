@@ -185,12 +185,12 @@ def _clear_removed_resident_state(removed_ids: set[str]) -> None:
     """Discard selections and previews that can refer to a removed resident."""
     _reset_uploads()
     for key in list(st.session_state):
-        if key in {"selected_resident", "resident_page_picker", "export_resident", "roster_selection"}:
+        if key in {"selected_resident", "resident_page_picker", "export_resident", "roster_selection", "yearly_progress_resident"}:
             if st.session_state[key] in removed_ids:
                 st.session_state.pop(key, None)
         elif key.startswith(("map_", "replace_", "include_")):
             st.session_state.pop(key, None)
-        elif key.startswith(("review_", "confirm_remove_")) and any(rid in key for rid in removed_ids):
+        elif key.startswith(("review_", "confirm_remove_", "annual_", "export_range_")) and any(rid in key for rid in removed_ids):
             st.session_state.pop(key, None)
 
 
@@ -265,11 +265,11 @@ def _save_problem(store: GitHubStore, keys: list[str]) -> None:
     st.divider()
 
 
-def _range_controls(state: dict, *, prefix: str) -> tuple[str, str]:
+def _range_controls(state: dict, *, prefix: str, default_start: date | None = None) -> tuple[str, str]:
     today = _today(state)
     a, b = st.columns(2)
     with a:
-        start = st.date_input("Reporting period starts", value=m.current_academic_start(today), key=prefix + "_start")
+        start = st.date_input("Reporting period starts", value=default_start or m.current_academic_start(today), key=prefix + "_start")
     with b:
         end = st.date_input("Evidence through", value=today, key=prefix + "_end", help="Includes evaluations completed through this date when a completion date is supplied. Otherwise the source event or reporting date is used.")
     if start > end:
@@ -460,6 +460,10 @@ def _resident_page(state: dict, store: GitHubStore | None) -> None:
         return
     st.subheader(_escape(resident["name"]))
     st.caption(f"Training began {resident['start_date']} · {resident.get('status', 'Active')} · Expected graduation {resident.get('graduation_date') or 'not entered'}")
+    if st.button("Open yearly exam scores, clinic tallies and encounters"):
+        st.session_state["yearly_progress_resident"] = resident["id"]
+        st.session_state["nav_target"] = "Yearly progress"
+        st.rerun()
     start, end = _range_controls(state, prefix="resident_range")
     records = m.records_for(state, resident["id"], start, end)
     tabs = st.tabs(["Overview", "Evidence", "Milestones", "CCC review", "Review history"])
@@ -492,6 +496,116 @@ def _resident_page(state: dict, store: GitHubStore | None) -> None:
         _review_editor(state, resident, store)
     with tabs[4]:
         _history(state, resident, store)
+
+
+def _yearly_progress_page(state: dict, store: GitHubStore | None) -> None:
+    from ccc import annual
+
+    st.header("Yearly progress")
+    resident = _pick_resident(state, "yearly_progress_resident")
+    if resident is None:
+        return
+    st.subheader(_escape(resident["name"]))
+    st.caption("Save exam results, clinic patient tallies, and observed encounters for each residency year. These values carry forward into CCC summaries.")
+    current = annual.progress_for(state, resident["id"], _today(state).isoformat())
+    summary = []
+    for pgy in range(1, 5):
+        rows = [entry for entry in current if entry["pgy"] == pgy]
+        for entry in rows or [annual.default_progress(resident, pgy, _today(state))]:
+            fields = entry["fields"]
+            summary.append({"Year": f"PGY{pgy}", "Academic year": entry["academic_year"],
+                            "Pediatrics score": fields.get("pediatrics_ite_score"),
+                            "Expected pass rate (%)": fields.get("pediatrics_ite_expected_pass_rate"),
+                            "Medicine score": fields.get("medicine_ite_score"),
+                            "Medicine percentile": fields.get("medicine_ite_percentile"),
+                            "Adult clinic patients": fields.get("adult_clinic_count"),
+                            "Pediatric clinic patients": fields.get("pediatric_clinic_count"),
+                            "Observed encounters": (f"{sum(fields.get(key) is True for key in annual.ENCOUNTER_FIELDS)} of 4 completed"
+                                                      if any(fields.get(key) is not None for key in annual.ENCOUNTER_FIELDS) else "Not recorded"),
+                            "Updated through": entry.get("as_of", "") if rows else ""})
+    st.dataframe(pd.DataFrame(summary), hide_index=True, width="stretch")
+    st.caption("A blank value means it has not been recorded. A zero is a recorded result.")
+    if not _permission("review") or store is None:
+        st.info("A reviewer or administrator can update yearly progress.")
+        return
+
+    pgy = st.selectbox("Residency year", [1, 2, 3, 4],
+                       index=min(4, max(1, m.current_pgy(resident, _today(state)))) - 1,
+                       format_func=lambda value: f"PGY{value}", key=f"annual_pgy_{resident['id']}")
+    saved = sorted([entry for entry in state.get("annual_progress", [])
+                    if entry["resident_id"] == resident["id"] and entry["pgy"] == pgy],
+                   key=lambda entry: (entry["period_start"], entry["as_of"]), reverse=True)
+    selected = None
+    if saved:
+        lookup = {entry["id"]: entry for entry in saved}
+        choice = st.selectbox("Training year to update", [*lookup, "__new__"],
+                               format_func=lambda value: "Add another training year for this PGY" if value == "__new__"
+                               else f"{lookup[value]['academic_year']} · {lookup[value]['period_start']} to {lookup[value]['period_end']}",
+                               key=f"annual_entry_{resident['id']}_{pgy}")
+        selected = lookup.get(choice)
+    defaults = copy.deepcopy(selected) if selected else annual.default_progress(resident, pgy, _today(state))
+    if selected:
+        defaults["as_of"] = max(defaults["period_start"], min(defaults["period_end"], _today(state).isoformat()))
+    fields = defaults["fields"]
+    legacy = sorted([review for review in state["reviews"] if review["resident_id"] == resident["id"]
+                     and review["pgy"] == pgy and review.get("academic_year") == defaults["academic_year"]],
+                    key=lambda review: (review["period_end"], review.get("updated_at", "")), reverse=True)
+    legacy_rows = []
+    for review in legacy:
+        for key, label in m.REVIEW_VALUE_FIELDS.items():
+            value = review["fields"].get(key)
+            if key in {*annual.NUMERIC_FIELDS, "pediatrics_ite_percentile", "observed_encounters_completed"} and value not in (None, ""):
+                legacy_rows.append({"Review date": review["review_date"], "Field": label, "Recorded value": str(value)})
+    if legacy_rows:
+        with st.expander("Values previously entered in CCC reviews"):
+            st.dataframe(pd.DataFrame(legacy_rows), hide_index=True, width="stretch")
+            st.caption("These remain in their original reviews. Enter the values below to include them in the yearly table. An earlier Pediatrics percentile is not an expected pass rate.")
+
+    form_key = f"annual_form_{resident['id']}_{pgy}_{defaults.get('id', 'new')}_{state['revision']}"
+    with st.form(form_key):
+        as_of = st.date_input("Progress recorded through", value=m.parse_date(defaults["as_of"]),
+                              help="Use the date represented by these scores and year-to-date tallies. Earlier saved values remain available for reports with earlier cutoffs.")
+        with st.expander("Training-year dates"):
+            a, b, c = st.columns(3)
+            academic_year = a.text_input("Academic year for these values", value=defaults["academic_year"])
+            period_start = b.date_input("Training year starts", value=m.parse_date(defaults["period_start"]))
+            period_end = c.date_input("Training year ends", value=m.parse_date(defaults["period_end"]))
+            st.caption("Change these dates for an off-cycle or repeated training year.")
+        st.subheader("In-training exams")
+        entered = {}
+        a, b = st.columns(2)
+        for container, keys in [(a, ("pediatrics_ite_score", "pediatrics_ite_expected_pass_rate")),
+                                (b, ("medicine_ite_score", "medicine_ite_percentile"))]:
+            for key in keys:
+                entered[key] = container.number_input(annual.FIELD_LABELS[key], min_value=0.0,
+                                                      max_value=100.0 if key in annual.PERCENT_FIELDS else None,
+                                                      value=float(fields[key]) if fields.get(key) is not None else None,
+                                                      step=1.0, format="%g", placeholder="Not recorded")
+        st.subheader("Clinic patient tallies")
+        a, b = st.columns(2)
+        for container, key in [(a, "adult_clinic_count"), (b, "pediatric_clinic_count")]:
+            entered[key] = container.number_input(annual.FIELD_LABELS[key], min_value=0,
+                                                  value=fields.get(key), step=1, placeholder="Not recorded")
+        st.caption("Enter the total for this residency year through the progress date above.")
+        st.subheader("Observed encounters")
+        st.caption("Record each encounter separately so you can see what is complete for this year.")
+        statuses = {None: "Not recorded", False: "Not completed", True: "Completed"}
+        for col, key in zip(st.columns(4), annual.ENCOUNTER_FIELDS):
+            entered[key] = col.selectbox(annual.ENCOUNTER_FIELDS[key], [None, False, True],
+                                         index=[None, False, True].index(fields.get(key)),
+                                         format_func=lambda value: statuses[value])
+        st.caption("Select Save yearly progress to keep these changes.")
+        submitted = st.form_submit_button("Save yearly progress", type="primary", width="stretch")
+    if submitted:
+        data = {**defaults, "pgy": pgy, "academic_year": academic_year,
+                "period_start": period_start.isoformat(), "period_end": period_end.isoformat(),
+                "as_of": as_of.isoformat(), "fields": entered}
+        try:
+            candidate = annual.save_progress(state, resident["id"], data, _actor())
+            if _persist(candidate, store, f"PGY{pgy} yearly progress saved. CCC summaries will include these values."):
+                st.rerun()
+        except m.ValidationError as exc:
+            st.error(str(exc))
 
 
 def _review_editor(state: dict, resident: dict, store: GitHubStore | None) -> None:
@@ -531,7 +645,7 @@ def _review_editor(state: dict, resident: dict, store: GitHubStore | None) -> No
         first = b.date_input("Review period starts", value=m.parse_date(defaults["period_start"]))
         last = c.date_input("Evidence cutoff", value=m.parse_date(defaults["period_end"]))
         meeting = d.date_input("Meeting date", value=m.parse_date(defaults["review_date"]))
-        edited = {}
+        edited = copy.deepcopy(fields)
         st.subheader("Progress and next steps")
         for key in ("overall_impression", "strengths", "areas_for_growth", "patterns_over_time", "ccc_summary", "ccc_decision", "action_plan"):
             edited[key] = st.text_area(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""), height=90)
@@ -541,15 +655,23 @@ def _review_editor(state: dict, resident: dict, store: GitHubStore | None) -> No
         a, b = st.columns(2)
         edited["follow_up_date"] = a.text_input("Action plan follow-up date", value=fields.get("follow_up_date", ""), placeholder="YYYY-MM-DD or not yet scheduled")
         edited["next_review_date"] = b.text_input("Next review date", value=fields.get("next_review_date", ""), placeholder="YYYY-MM-DD or not yet scheduled")
-        with st.expander("Clinic visits, exams, observed encounters and scholarship"):
-            st.caption("Leave unavailable results blank. These are recorded program values, not automatically verified thresholds.")
-            keys = list(m.REVIEW_VALUE_FIELDS)
+        st.caption("Enter yearly exam scores, clinic patient tallies, and observed encounters on the Yearly progress page.")
+        with st.expander("Other scores and earlier review values"):
+            keys = [key for key in m.REVIEW_VALUE_FIELDS if key.startswith("usmle_") or fields.get(key) not in (None, "")]
             for i in range(0, len(keys), 3):
                 cols = st.columns(3)
                 for col, key in zip(cols, keys[i:i + 3]):
                     edited[key] = col.text_input(m.REVIEW_VALUE_FIELDS[key], value=str(fields.get(key, "")))
+        with st.expander("Rotations, scholarship and additional feedback"):
             for key in ("rotation_summary", "observed_encounters_notes", "abstracts", "publications", "advocacy", "nursing_feedback", "resident_comments"):
                 edited[key] = st.text_area(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""), height=80)
+        with st.expander("Practice readiness assessment"):
+            st.caption("Record the committee's assessment for each area shown in the CCC summary.")
+            for key in ("readiness_clinical_reasoning", "readiness_team_leadership", "readiness_learner_supervision", "readiness_communication", "readiness_professionalism", "readiness_systems_based_practice"):
+                edited[key] = st.text_input(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""))
+        with st.expander("Duty-hour review notes"):
+            for key in ("duty_min_days_off", "duty_days_off_window", "duty_days_off_rotations", "duty_max_hours_4weeks", "duty_80_hour_window", "duty_80_hour_rotations", "duty_resolution_notes"):
+                edited[key] = st.text_input(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""))
         confirm_final = st.checkbox("I reviewed the evidence and this is the CCC's recorded assessment")
         a, b = st.columns(2)
         draft = a.form_submit_button("Save draft", width="stretch")
@@ -797,16 +919,18 @@ def _uploads(state: dict, store: GitHubStore) -> None:
 
 
 def _word_reports(state: dict) -> None:
+    from ccc import annual
+    from ccc.ccc_summary import build_ccc_summary
     from ccc.reports import build_resident_report, build_ccc_letter
-    from ccc.export_security import protect_docx, ExportSecurityError
-    if st.session_state.pop("clear_export_passwords", False):
-        st.session_state.pop("export_password", None)
-        st.session_state.pop("export_confirmation", None)
+
+    # Discard passphrase fields left over from an older app session.
+    for key in ("export_password", "export_confirmation", "clear_export_passwords"):
+        st.session_state.pop(key, None)
     st.header("Word reports")
     export_error = st.session_state.pop("export_error", None)
     if export_error:
         st.error(export_error)
-    st.write("Create an editable progress report or CCC letter for one resident or the whole group.")
+    st.write("Create your CCC summary, a detailed progress report, or a resident letter as an editable Word file.")
     if not _permission("export") and not st.session_state.get("demo"):
         st.info("Your account cannot export reports.")
         return
@@ -815,9 +939,11 @@ def _word_reports(state: dict) -> None:
         st.info("Add the resident roster first.")
         return
     scope = st.radio("Who is this for?", ["One resident", "Several residents"], horizontal=True)
-    document_type = st.radio("Document", ["Progress report", "CCC letter"], horizontal=True)
+    document_type = st.radio("Document", ["CCC summary", "Progress report", "CCC letter"], horizontal=True)
     review = None
+    selected_review = None
     bulk_basis = "Current dashboard date range"
+    own_start_dates = False
     if scope == "One resident":
         resident = _pick_resident(state, "export_resident")
         selected_residents = [resident]
@@ -826,7 +952,7 @@ def _word_reports(state: dict) -> None:
         for r in reviews:
             for n, old in enumerate(r.get("versions", []), 1):
                 review_map[f"{r['id']}::version-{n}"] = old
-        options = (["__live__"] if document_type == "Progress report" else []) + list(review_map)
+        options = ([] if document_type == "CCC letter" else ["__live__"]) + list(review_map)
         if not options:
             st.info("Save a CCC review before generating its letter.")
             return
@@ -835,72 +961,81 @@ def _word_reports(state: dict) -> None:
         review = review_map.get(selected_review)
         if review:
             start, end = review["period_start"], review["period_end"]
-            st.caption(f"Evidence period: {start} to {end}. " + ("This finalized review uses its preserved evidence." if review["status"] == "Final" else "This draft uses current saved evidence."))
+            st.caption(f"Evidence period: {start} to {end}. " + ("This finalized review uses its preserved evidence and yearly values." if review["status"] == "Final" else "This draft uses current saved evidence."))
         else:
-            start, end = _range_controls(state, prefix="export_range")
+            start, end = _range_controls(state, prefix=f"export_range_{resident['id']}",
+                                         default_start=m.parse_date(resident["start_date"]))
+            st.caption("The default range is the resident's start date through today. Adjust either date if needed.")
     else:
         ids = [r["id"] for r in residents]
         labels = _resident_labels(residents)
         selected = st.multiselect("Choose residents", ids, default=[r["id"] for r in residents if r.get("status") == "Active"], format_func=lambda x: labels[x])
         selected_residents = [r for r in residents if r["id"] in selected]
-        start, end = _range_controls(state, prefix="export_group_range")
+        date_basis = st.radio("Report start dates", ["Each resident's start date", "Use the same start date"], horizontal=True)
+        own_start_dates = date_basis == "Each resident's start date"
+        if own_start_dates:
+            start = min((r["start_date"] for r in selected_residents), default=_today(state).isoformat())
+            end = st.date_input("Evidence through", value=_today(state), key="export_group_cutoff").isoformat()
+            st.caption("Each report begins on that resident's own start date and ends on the cutoff above.")
+        else:
+            earliest = min((m.parse_date(r["start_date"]) for r in selected_residents), default=_today(state))
+            start, end = _range_controls(state, prefix="export_group_range", default_start=earliest)
         if document_type == "CCC letter":
-            st.caption("Each letter uses that resident's latest saved review with a meeting date in the selected range. Missing reviews block the batch so nobody is silently omitted.")
+            st.caption("Each letter uses that resident's latest saved review with a meeting date in the selected range.")
             bulk_basis = "Latest saved review in this range"
         else:
-            bulk_basis = st.radio("Group report basis", ["Latest saved review in this range", "Current dashboard date range"], horizontal=True)
+            bulk_basis = st.radio("Group report basis", ["Current dashboard date range", "Latest saved review in this range"], horizontal=True)
             if bulk_basis == "Latest saved review in this range":
-                st.caption("Each report uses that resident's latest review with a meeting date in this range, including its CCC assessment and evidence period. Missing reviews block the batch.")
-    details = st.checkbox("Include all evaluation comments and detailed evidence", value=True, disabled=document_type == "CCC letter")
-    protected = st.radio("Download protection", ["Password-protected Word", "Standard Word"], horizontal=True) == "Password-protected Word"
-    if protected:
-        st.caption("Use a separate passphrase of at least 14 characters. Word will ask for it when the file is opened.")
-    else:
-        st.info("Standard Word files are readable after download. Keep them in the program's approved secure location.")
-    context = json.dumps({"revision": state["revision"], "residents": [r["id"] for r in selected_residents], "review": selected_review if scope == "One resident" else None,
-                           "start": start, "end": end, "type": document_type, "protected": protected, "details": details, "basis": bulk_basis}, sort_keys=True)
-    with st.form("word_export_form", clear_on_submit=True):
-        if protected:
-            a, b = st.columns(2)
-            password = a.text_input("Export passphrase", type="password", max_chars=1024, key="export_password")
-            confirmation = b.text_input("Confirm export passphrase", type="password", max_chars=1024, key="export_confirmation")
-        else:
-            password = confirmation = ""
-        submitted = st.form_submit_button("Prepare Word download", type="primary", width="stretch")
-    if submitted:
+                st.caption("Each report uses its selected review's dates and assessment. Finalized reviews retain their saved evidence and yearly values.")
+    details = (st.checkbox("Include all evaluation comments and detailed evidence", value=True)
+               if document_type == "Progress report" else document_type == "CCC summary")
+    if document_type == "CCC summary":
+        st.caption("Uses your table format, with Medicine and Pediatrics evaluation summaries starting on separate pages.")
+    st.caption("Downloads are standard Word files. No export passphrase is required.")
+    context = json.dumps({"revision": state["revision"], "residents": [r["id"] for r in selected_residents],
+                          "review": selected_review, "start": start, "end": end, "type": document_type,
+                          "protected": False, "details": details, "basis": bulk_basis,
+                          "own_start_dates": own_start_dates}, sort_keys=True)
+    if st.button("Prepare Word download", type="primary", width="stretch"):
         st.session_state.pop("generated_export", None)
         if not selected_residents:
             st.session_state["export_error"] = "Choose at least one resident."
-            st.session_state["clear_export_passwords"] = True
-            st.rerun()
-        if protected and (len(password) < 14 or password != confirmation):
-            st.session_state["export_error"] = "Enter matching export passphrases of at least 14 characters."
-            st.session_state["clear_export_passwords"] = True
             st.rerun()
         outputs = []
         try:
             with st.spinner("Preparing Word documents…"):
+                name_counts = Counter(m.normalize_name(r["name"]) for r in selected_residents)
                 for resident in selected_residents:
                     chosen_review = review
+                    report_start = resident["start_date"] if own_start_dates else start
                     if scope == "Several residents" and bulk_basis == "Latest saved review in this range":
-                        matches = sorted([r for r in state["reviews"] if r["resident_id"] == resident["id"] and start <= r["review_date"] <= end], key=lambda r: r["review_date"])
+                        matches = sorted([r for r in state["reviews"] if r["resident_id"] == resident["id"] and report_start <= r["review_date"] <= end], key=lambda r: r["review_date"])
                         if not matches:
                             raise m.ValidationError("A selected resident has no review in this period. Save their review or remove them from this batch.")
                         chosen_review = matches[-1]
                     export_resident = chosen_review.get("snapshot_resident", resident) if chosen_review and chosen_review.get("status") == "Final" else resident
                     program_name = state["settings"].get("program_name", "Medicine Pediatrics Residency")
+                    selected_start = chosen_review["period_start"] if chosen_review else report_start
+                    selected_end = chosen_review["period_end"] if chosen_review else end
+                    if selected_start > selected_end:
+                        raise m.ValidationError("A report ends before the resident's start date. Adjust the dates or resident selection.")
                     if document_type == "CCC letter":
                         plain = build_ccc_letter(export_resident, chosen_review, program_name=program_name)
+                    elif document_type == "CCC summary":
+                        tracking = annual.progress_for(state, resident["id"], selected_end, review=chosen_review)
+                        plain = build_ccc_summary(export_resident, m.active_records(state), state["reviews"],
+                                                  period_start=selected_start, period_end=selected_end, review=chosen_review,
+                                                  program_name=program_name, tracking=tracking)
                     else:
-                        selected_start = chosen_review["period_start"] if chosen_review else start
-                        selected_end = chosen_review["period_end"] if chosen_review else end
                         plain = build_resident_report(export_resident, m.active_records(state), state["reviews"],
                                                        period_start=selected_start, period_end=selected_end, review=chosen_review,
                                                        program_name=program_name, include_details=details)
-                    data = protect_docx(plain, password) if protected else plain
-                    # Password-protected contents do not protect filesystem names.
-                    filename = "resident-" + resident["id"][:8] + ("-ccc-letter.docx" if document_type == "CCC letter" else "-progress.docx")
-                    outputs.append((filename, data))
+                    safe_name = re.sub(r"[^\w .-]", "", export_resident["name"]).strip(" .").replace(" ", "_") or "Resident"
+                    if name_counts[m.normalize_name(resident["name"])] > 1:
+                        safe_name += "_" + resident["id"][:8]
+                    suffix = {"CCC summary": "CCC_Summary", "Progress report": "Progress_Report", "CCC letter": "CCC_Letter"}[document_type]
+                    filename = f"{selected_end}_{safe_name}_{suffix}.docx"
+                    outputs.append((filename, plain))
             if len(outputs) == 1:
                 filename, payload = outputs[0]
                 mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -910,16 +1045,13 @@ def _word_reports(state: dict) -> None:
                     for filename, data in outputs:
                         z.writestr(filename, data)
                 payload, filename, mime = buffer.getvalue(), "resident-word-reports.zip", "application/zip"
-            st.session_state["generated_export"] = {"data": payload, "filename": filename, "mime": mime, "context": context, "protected": protected}
-        except (ValueError, ExportSecurityError) as exc:
-            st.session_state["export_error"] = str(exc) if isinstance(exc, (m.ValidationError, ExportSecurityError)) else "The Word file could not be prepared. Check the selected review and evidence."
-        finally:
-            password = confirmation = ""
-            st.session_state["clear_export_passwords"] = True
+            st.session_state["generated_export"] = {"data": payload, "filename": filename, "mime": mime, "context": context, "protected": False}
+        except ValueError as exc:
+            st.session_state["export_error"] = str(exc) if isinstance(exc, m.ValidationError) else "The Word file could not be prepared. Check the selected review and evidence."
         st.rerun()
     generated = st.session_state.get("generated_export")
     if generated and generated["context"] == context:
-        st.success("Your Word download is ready." + (" Each document requires your export passphrase." if generated["protected"] else ""))
+        st.success("Your Word download is ready.")
         st.download_button("Download Word file" if scope == "One resident" else "Download Word files", generated["data"], generated["filename"], generated["mime"], type="primary", width="stretch")
 
 
@@ -964,11 +1096,14 @@ def _roster(state: dict, store: GitHubStore) -> None:
         with st.expander("Remove this resident"):
             record_count = sum(r["resident_id"] == chosen for r in state["records"])
             review_count = sum(r["resident_id"] == chosen for r in state["reviews"])
+            annual_count = sum(r["resident_id"] == chosen for r in state.get("annual_progress", []))
             st.text(f"Resident: {item['name']}")
-            if record_count or review_count:
+            if record_count or review_count or annual_count:
                 evidence_label = "entry" if record_count == 1 else "entries"
                 review_label = "review" if review_count == 1 else "reviews"
                 st.warning(f"This removes the resident, {record_count} saved evidence {evidence_label}, and {review_count} CCC {review_label} from the dashboard, including all saved versions of those reviews.")
+                if annual_count:
+                    st.write(f"It also removes {annual_count} yearly progress entries and their saved value history.")
             else:
                 st.write("This resident has no saved evidence or CCC reviews. Removing them deletes this roster entry.")
             st.caption("For a real resident whose history should stay available, change their status to Inactive instead. Removal keeps original encrypted uploads, older backups, and previous repository versions.")
@@ -1111,7 +1246,7 @@ def _administration(state: dict, store: GitHubStore, keys: list[str], users: dic
         st.caption(f"App version {__version__} · No automatic readiness or duty-hour compliance decisions.")
     with tabs[3]:
         st.subheader("Daily routine")
-        st.markdown("1. Export whichever reports are ready in New Innovations.\n2. Open Upload files, choose the specialty and dates, and add one or more files. Leave unused areas empty.\n3. Process the selected files, review the entries and resident matches, then save.\n4. Open Resident review to review evidence and document the CCC discussion.\n5. Open Word reports to prepare reports or letters.")
+        st.markdown("1. Export whichever reports are ready in New Innovations.\n2. Open Upload files, choose the specialty and dates, and add one or more files. Leave unused areas empty.\n3. Process the selected files, review the entries and resident matches, then save.\n4. Open Yearly progress to enter exam results, clinic patient tallies, and observed encounters.\n5. Open Resident review to review evidence and document the CCC discussion.\n6. Open Word reports to download a CCC summary or letter.")
         st.subheader("Compatibility templates")
         st.caption("Use these only when the standard export is unavailable or a PDF has no reliable score labels. Keep one resident or observation per row and use YYYY-MM-DD dates.")
         templates = Path(__file__).resolve().parents[1] / "templates"
@@ -1129,13 +1264,13 @@ def _sidebar(state: dict) -> str:
         identity = st.session_state.get("identity", {})
         st.text(identity.get("display_name", "Fictional preview"))
         if st.session_state.get("demo"):
-            pages = ["Program dashboard", "Resident review", "Word reports"]
+            pages = ["Program dashboard", "Yearly progress", "Resident review", "Word reports"]
             st.caption("Fictional data only. Uploads and saving are unavailable.")
         else:
             pages = ["Program dashboard"]
             if _permission("upload"):
                 pages.append("Upload files")
-            pages.extend(["Resident review", "Word reports"])
+            pages.extend(["Yearly progress", "Resident review", "Word reports"])
             if _permission("manage"):
                 pages.append("Administration")
         if st.session_state.get("nav_target") in pages:
@@ -1221,6 +1356,8 @@ def run() -> None:
         _program_dashboard(state)
     elif page == "Upload files":
         _uploads(state, store)
+    elif page == "Yearly progress":
+        _yearly_progress_page(state, store)
     elif page == "Resident review":
         _resident_page(state, store)
     elif page == "Word reports":
@@ -1243,6 +1380,8 @@ def run_demo() -> None:
     page = _sidebar(state)
     if page == "Program dashboard":
         _program_dashboard(state)
+    elif page == "Yearly progress":
+        _yearly_progress_page(state, None)
     elif page == "Resident review":
         _resident_page(state, None)
     elif page == "Word reports":

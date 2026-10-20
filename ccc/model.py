@@ -49,6 +49,19 @@ REVIEW_TEXT_FIELDS = {
     "follow_up_date": "Action plan follow-up date",
     "next_review_date": "Next review date",
     "resident_comments": "Resident comments",
+    "readiness_clinical_reasoning": "Readiness: clinical reasoning",
+    "readiness_team_leadership": "Readiness: team leadership",
+    "readiness_learner_supervision": "Readiness: learner supervision",
+    "readiness_communication": "Readiness: communication",
+    "readiness_professionalism": "Readiness: professionalism",
+    "readiness_systems_based_practice": "Readiness: systems-based practice",
+    "duty_min_days_off": "Fewest days off recorded",
+    "duty_days_off_window": "Days-off reporting window",
+    "duty_days_off_rotations": "Rotations associated with days-off concerns",
+    "duty_max_hours_4weeks": "Maximum hours in a four-week period",
+    "duty_80_hour_window": "Hours reporting window",
+    "duty_80_hour_rotations": "Rotations associated with hours concerns",
+    "duty_resolution_notes": "Duty-hour review and resolution notes",
 }
 REVIEW_VALUE_FIELDS = {
     "adult_clinic_count": "Adult continuity clinic visits",
@@ -141,6 +154,26 @@ def new_state(program_name: str = "Medicine Pediatrics Residency") -> dict:
     }
 
 
+def _validate_cumulative_snapshots(review: dict, resident_id: str, depth: int = 0) -> None:
+    if depth > 30:
+        raise ValidationError("The preserved review history is too deeply nested.")
+    if "cumulative_evidence_snapshot" in review:
+        cumulative = review["cumulative_evidence_snapshot"]
+        cutoff = review.get("period_end")
+        if (review.get("resident_id") != resident_id or not parse_date(cutoff)
+                or not isinstance(cumulative, list) or any(
+                    not isinstance(x, dict) or x.get("resident_id") != resident_id
+                    or x.get("category") not in CATEGORIES or x.get("specialty") not in SPECIALTIES
+                    or not parse_date(x.get("date"))
+                    or not record_in_window(x, "0001-01-01", cutoff) for x in cumulative)):
+            raise ValidationError("A review has invalid, future, or another resident's cumulative evidence.")
+    versions = review.get("versions", [])
+    if isinstance(versions, list):
+        for prior in versions:
+            if isinstance(prior, dict):
+                _validate_cumulative_snapshots(prior, resident_id, depth + 1)
+
+
 def validate_state(state: Any) -> dict:
     """Validate backups before accepting them as the live database."""
     if not isinstance(state, dict) or state.get("schema_version") != SCHEMA_VERSION:
@@ -186,6 +219,9 @@ def validate_state(state: Any) -> dict:
             if any(not isinstance(x, dict) or x.get("resident_id") != r["resident_id"] or x.get("category") not in CATEGORIES
                    or x.get("specialty") not in SPECIALTIES or not parse_date(x.get("date")) for x in r["snapshot"]):
                 raise ValidationError("A finalized review contains another resident's evidence.")
+        _validate_cumulative_snapshots(r, r["resident_id"])
+    from ccc.annual import validate_state_progress
+    validate_state_progress(state)
     try:
         json.dumps(state, allow_nan=False)
     except (ValueError, TypeError):
@@ -281,9 +317,14 @@ def remove_resident(state: dict, resident_id: str, actor: str) -> dict:
     result["residents"] = [r for r in result["residents"] if r["id"] != resident_id]
     result["records"] = [r for r in result["records"] if r["resident_id"] != resident_id]
     result["reviews"] = [r for r in result["reviews"] if r["resident_id"] != resident_id]
+    annual_removed = 0
+    if "annual_progress" in result:
+        result["annual_progress"] = [r for r in result["annual_progress"] if r["resident_id"] != resident_id]
+        annual_removed = len(state["annual_progress"]) - len(result["annual_progress"])
     result = with_audit(result, actor, "Resident removed", resident_id=resident_id,
                         records_removed=len(state["records"]) - len(result["records"]),
-                        reviews_removed=len(state["reviews"]) - len(result["reviews"]))
+                        reviews_removed=len(state["reviews"]) - len(result["reviews"]),
+                        **({"annual_records_removed": annual_removed} if annual_removed else {}))
     return validate_state(result)
 
 
@@ -522,8 +563,12 @@ def save_review(state: dict, resident_id: str, data: dict, actor: str, *, finali
     item["updated_by"] = actor
     item["status"] = "Final" if finalize else "Draft"
     if finalize:
+        from ccc.annual import progress_for
         item["snapshot"] = copy.deepcopy(records_for(result, resident_id, item["period_start"], item["period_end"]))
         item["snapshot_resident"] = copy.deepcopy(resident_by_id(result, resident_id))
+        item["cumulative_evidence_snapshot"] = copy.deepcopy(records_for(
+            result, resident_id, item["snapshot_resident"]["start_date"], item["period_end"]))
+        item["annual_progress_snapshot"] = progress_for(result, resident_id, item["period_end"])
         item["excluded_coverage_count"] = len(coverage_exclusions(result, resident_id, item["period_start"], item["period_end"]))
         item["finalized_at"] = now_iso()
         item["finalized_by"] = actor
@@ -550,6 +595,8 @@ def reopen_review(state: dict, review_id: str, actor: str, reason: str) -> dict:
                    "reopen_reason": reason.strip(), "updated_at": now_iso()})
     # Preserved final snapshot lives in versions; draft displays current evidence.
     review.pop("snapshot", None)
+    review.pop("cumulative_evidence_snapshot", None)
+    review.pop("annual_progress_snapshot", None)
     return with_audit(result, actor, "Review reopened", review_id=review_id, reason=reason.strip())
 
 
