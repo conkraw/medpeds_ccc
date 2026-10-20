@@ -1,12 +1,14 @@
 # Med Peds CCC Streamlit App
 
-This app replaces the repeated REDCap dashboards and Jupyter conversion steps with one resident record across a four-year Medicine-Pediatrics program. Administrators upload New Innovations reports, check the preview, and save. Reviewers read the evidence, document the CCC assessment, and download editable Word reports or resident letters.
+This app replaces the repeated REDCap dashboards and Jupyter conversion steps with one resident record across a four-year Medicine-Pediatrics program. Administrators upload New Innovations reports, check the preview, and save. Reviewers track yearly progress, document the CCC assessment, and download editable Word summaries, detailed reports, or resident letters.
 
-The implementation is ready for a test deployment. It has been tested with fictional data and the input structures described in the supplied notebooks. Current raw New Innovations exports and the target GitHub/Streamlit accounts were not available for live acceptance testing. Complete the short acceptance check below before introducing real resident records.
+**Version 1.1.0** adds a **Yearly progress** page for PGY1 through PGY4 and makes the **CCC summary** the default Word report. The summary follows the supplied Word example and report notebook, with Medicine and Pediatrics evaluation tables starting on separate pages. Downloads are ordinary `.docx` files; no export passphrase is required. App sign-in and encrypted GitHub storage remain in place.
+
+The app has been tested with fictional data and the input structures described in the supplied notebooks. Check a current export from each format you use against its preview before relying on that format for resident records. Project-specific verification is documented in `VALIDATION.md`.
 
 ### Upload files as they become available
 
-Version 1.0.4 makes each of the four upload areas explicitly optional. One file is enough. Add it to the appropriate area, choose the specialty and dates, and select **Process 1 file**. Review the parsed entries and resident matches, confirm them, and select **Save to resident dashboards**. The other upload areas can stay empty. The selected files clear after a successful save, ready for the next upload.
+Each of the four upload areas is optional. One file is enough. Add it to the appropriate area, choose the specialty and dates, and select **Process 1 file**. Review the parsed entries and resident matches, confirm them, and select **Save to resident dashboards**. The other upload areas can stay empty. The selected files clear after a successful save, ready for the next upload.
 
 Later uploads add to the saved evidence. You do not need to upload older reports again or supply a file for a category with no new information. Exact saved entries are skipped. A file containing only already saved entries no longer prevents another file in the same batch from adding new evidence. If none of the selected files has new entries, the app tells you and makes no save. Explicit complete replacements still require the existing replacement checks.
 
@@ -16,13 +18,13 @@ If you previously skipped a resident in a shared report, you can upload the iden
 
 Open **Administration**, select **Residents**, and choose the resident under **Add or edit a resident**. Expand **Remove this resident**. Check the displayed name and the number of saved evidence entries and CCC reviews, confirm, and select **Remove resident**.
 
-Removal deletes that resident from the current roster and dashboards, together with their evidence and CCC reviews, including all versions of those reviews. Other residents and shared uploads are preserved. The action is saved through the existing encrypted storage and conflict checks. A failed save leaves the last saved records intact and offers the existing recovery controls.
+Removal deletes that resident from the current roster and dashboards, together with their evidence, yearly progress, and CCC reviews, including saved versions. Other residents and shared uploads are preserved. The action is saved through the existing encrypted storage and conflict checks. A failed save leaves the last saved records intact and offers the existing recovery controls.
 
 Original encrypted upload files, older backups, prior repository versions, and audit history are retained. This action does not erase every historical copy of the resident's information. To retain a real resident's accessible history, change their status to **Inactive** rather than removing them.
 
 ### Resident names, without manually assigned IDs
 
-Use the resident's name from New Innovations. No New Innovations ID or REDCap record ID is required. Version 1.0.3 puts names first in the roster, upload matching, and report selection. The templates and fictional examples do not require you to supply resident or evaluation IDs.
+Use the resident's name from New Innovations. No New Innovations ID or REDCap record ID is required. The roster, upload matching, and report selection all use names. The templates and fictional examples do not require you to supply resident or evaluation IDs.
 
 The app automatically creates a private internal reference when a resident is added. It keeps that resident's evidence and reviews connected over four years, even when their name is edited. You do not create or manage that reference. Add a prior name or another confirmed spelling under Other names used in exports, or confirm and remember the variation during upload. Ambiguous names need an explicit match before evidence is saved. An ambiguous roster CSV is stopped for review instead of creating another resident.
 
@@ -30,11 +32,11 @@ Existing optional source references remain supported under a collapsed section f
 
 ### Public and private repositories
 
-Version 1.0.2 accepts either a public or private GitHub repository for encrypted storage. Every dashboard and original-file payload the app saves is encrypted before upload in both cases. App sign-in, encryption keys, GitHub write permissions, and conflict checks still apply. No additional setting is required to use a public repository.
+Either a public or private GitHub repository can hold the encrypted records. Every dashboard and original-file payload the app saves is encrypted before upload in both cases. App sign-in, encryption keys, GitHub write permissions, and conflict checks still apply. No additional setting is required to use a public repository.
 
 ### Fix for an existing Python 3.14 deployment
 
-Version 1.0.1 updates one dependency from `pandas==2.2.3` to `pandas==2.3.3`. The earlier pin has no Python 3.14 wheel. If your Streamlit build log shows Python 3.14 and pauses after resolving packages, update that line in the repository's `requirements.txt` and commit the change. Streamlit will rebuild the dependencies. The corrected package set installs from binary wheels on Python 3.14.8. This change does not require editing Secrets or recreating the app.
+For an app still using the original version 1.0.0 dependencies, version 1.0.1 changed `pandas==2.2.3` to `pandas==2.3.3`. That correction is included in version 1.1.0. The earlier pin has no Python 3.14 wheel. If your Streamlit build log shows Python 3.14 and pauses after resolving packages, update that line in the repository's `requirements.txt` and commit the change. Streamlit will rebuild the dependencies. The corrected package set installs from binary wheels on Python 3.14.8. This change does not require editing Secrets or recreating the app.
 
 The excerpted build log did not contain a final failure, so it cannot establish that this incompatibility was the only cause of the delay. See `VALIDATION.md` for the checks performed on the updated package.
 
@@ -45,7 +47,8 @@ The excerpted build log did not contain a final failure, so it cannot establish 
 | Program dashboard | See residents, training years, evaluation counts, latest evidence and reviews, and evidence that needs checking. |
 | Upload files | Four optional upload areas for evaluations, milestones, activities, and duty hours. Process one file or any available group, then review and save. |
 | Resident review | Read one resident's evidence, specialty-specific milestone history, CCC notes, and all eight checkpoints. |
-| Word reports | Prepare a progress report or CCC letter for one resident, or Word files for a group. Password-to-open protection is the default. |
+| Yearly progress | Record PGY1–4 exam results, clinic patient tallies, and four observed encounters per year, with dated histories. |
+| Word reports | Prepare a CCC summary, detailed progress report, or CCC letter for one resident or a group. Download editable Word files without an export passphrase. |
 | Administration | Add, edit, or remove residents, correct uploads, download encrypted backups, restore a backup, and get templates. |
 
 Medicine and Pediatrics retain their own forms, questions, scores, and source labels. They appear within the same resident record and are never averaged into one cross-specialty milestone score. Combined reports remain a separate classification.
@@ -58,11 +61,31 @@ Medicine and Pediatrics retain their own forms, questions, scores, and source la
 4. Select **Process 1 file** or the button showing your selected file count. Read warnings and check the displayed entries. Files with parsing errors cannot be accepted.
 5. Confirm every resident name match. Save name variations only when you are sure they refer to the same resident. No record ID is required.
 6. Select **Save to resident dashboards** and wait for the saved message. Parsed data and, by default, copies of the original files are encrypted before GitHub receives them.
-7. Open **Resident review** or **Word reports**.
+7. Update **Yearly progress** when exam results, clinic tallies, or observed encounters change.
+8. Open **Resident review** to document the CCC assessment, then **Word reports** to prepare the summary.
 
 Medicine and Pediatrics files can be uploaded in separate batches throughout the year. You do not need to prepare filenames, run notebooks, make midyear and year-end copies, or assemble an intermediate REDCap CSV.
 
 Read [INPUT_FORMATS.md](INPUT_FORMATS.md) for the exact supported columns and file types. `templates/` contains blank compatibility CSVs; `examples/` contains fictional practice files. A template is an alternative for an unsupported export, not a prerequisite for ordinary uploads.
+
+## Yearly progress
+
+Open **Yearly progress**, choose the resident, and select **Residency year**: PGY1, PGY2, PGY3, or PGY4. The table at the top shows the saved values for each training year.
+
+| Section | What to enter |
+| --- | --- |
+| Pediatrics in-training exam | The Pediatrics score and **expected pass rate (%)** supplied with the exam result. |
+| Medicine in-training exam | The Medicine score and **percentile** supplied with the exam result. |
+| Clinic patient tallies | Adult and pediatric patient totals for that residency year through the selected progress date. |
+| Observed encounters | A separate status for encounters 1, 2, 3, and 4: **Not recorded**, **Not completed**, or **Completed**. |
+
+Set **Progress recorded through** to the date represented by the values, enter the information available, and select **Save yearly progress**. Leave unavailable numbers blank. A blank means not recorded; zero is an entered result. The Pediatrics expected pass rate and Medicine percentile are separate measures. An older Pediatrics percentile is not converted into an expected pass rate.
+
+Update the same training-year record as information arrives. Each save preserves the preceding values, so a report with an earlier evidence cutoff can use the values recorded through that date. Clinic tallies are year-to-date totals; successive updates are not added together.
+
+For an off-cycle or repeated year, expand **Training-year dates** and set the actual academic year and start/end dates. If that PGY already has a saved record, choose **Add another training year for this PGY** under **Training year to update** to keep the repeated year separate.
+
+Values previously entered in CCC reviews remain available under **Values previously entered in CCC reviews**. Check them and enter the appropriate values into the yearly form when needed. Reviewers and administrators can save yearly progress; viewers can read it.
 
 ## Reviewing a resident
 
@@ -72,25 +95,34 @@ The eight checkpoints are PGY1 Midyear and Year end through PGY4 Midyear and Yea
 
 The evidence cutoff uses the completion date when available, otherwise the source event or reporting date. For example, an evaluation completed January 5 is not available in a December 31 cutoff, even if the rotation occurred in December. Its rotation dates are retained. Select a cutoff that reflects the evidence available to the committee.
 
-Review fields include strengths, growth areas, patterns over time, the CCC discussion and decision, an action plan, who will help, and follow-up. An expandable section retains clinic visit counts, observed encounters, separate Medicine and Pediatrics ITE results, USMLE results, scholarship, advocacy, and nursing/team feedback. These are entered program values; the app does not claim they were independently verified.
+Review fields include strengths, growth areas, patterns over time, the CCC discussion and decision, an action plan, who will help, and follow-up. Additional sections retain recorded USMLE results, scholarship, advocacy, nursing/team feedback, and the committee's readiness assessment. Enter yearly exams, clinic tallies, and observed encounters on **Yearly progress**. These are entered program values; the app does not claim they were independently verified.
 
-**Save draft** persists work in progress. **Finalize review** preserves a copy of the selected evidence, resident profile, entered assessment, and review history. Later uploads or corrections do not silently change that final evidence. An administrator can reopen a finalized review with a reason; the previous final version remains available for export. This is a versioned review record, not a legally certified electronic signature.
+**Save draft** persists work in progress. **Finalize review** preserves the selected evidence, yearly progress values, resident profile, entered assessment, and review history. Later uploads or yearly updates do not silently change those finalized snapshots. An administrator can reopen a finalized review with a reason; the previous final version remains available for export. This is a versioned review record, not a legally certified electronic signature.
 
 Missing files prompt an evidence check, not a performance judgment. Unassessed scores do not become zero. Conference percentages and cumulative summaries are shown with their actual source periods and are not added or averaged together. Source-reported duty-hour concerns are retained; the app does not infer compliance, days off, or readiness for independent practice from incomplete records.
 
 ## Word output
 
-Progress reports contain the entered CCC assessment, evidence counts and source periods, separate milestone sets, recorded clinic/exam fields, procedures, attendance, duty-hour information, review history, and optional full evaluation and self-assessment details. Full details are selected by default. There is no 50-evaluation or five-violation truncation.
+Open **Word reports** and choose **One resident** or **Several residents**. **CCC summary** is the default document. It follows the supplied Word example and report notebook, including yearly exam results, clinic tallies, observed encounters, specialty-specific milestones, activity summaries, and the committee's recorded assessment. The Medicine and Pediatrics evaluation-summary tables each start on a separate page. Original question wording, responses, comments, and full narratives are retained without a 50-evaluation limit.
 
-For a group of residents, the default progress-report basis is each resident's latest saved CCC review in the selected range, using that review's assessment and reporting period. A resident without a saved review is flagged before generation. Choose the current dashboard date range when you want a current evidence report instead.
+Choose **Progress report** for the alternative detailed report, with evidence counts, source periods, review history, and evaluation/self-assessment details. Full details are selected by default. **CCC letter** uses a saved review's entered assessment, strengths, growth areas, and action plan. The app does not invent a signature or choose a concern designation based on the time of year.
 
-CCC letters use the selected review's entered assessment, strengths, growth areas, and action plan. The app does not invent a signature or choose a concern designation based on the time of year. The original local Word letter templates referenced in the notebooks were not supplied, so these are new, editable report and letter layouts.
+### Choose the evidence dates
 
-**Password-protected Word** is the default. Enter a separate export passphrase of at least 14 characters twice. The app encrypts the DOCX with Office password-to-open protection and verifies an exact in-memory decryption roundtrip before releasing it. Bulk downloads put the individually protected documents into a ZIP. Generic filenames avoid resident names in file metadata outside the documents. Share the passphrase separately through your approved workflow.
+| Report selection | Dates used |
+| --- | --- |
+| One resident, current dashboard evidence | Defaults to that resident's training start date through today. Either date can be adjusted. |
+| Several residents, current dashboard evidence | Defaults to each resident's own training start date through the common **Evidence through** date, initially today. A shared start date is also available. |
+| A selected saved review | Uses that review's own evidence period. A Final review uses its preserved evidence and yearly progress snapshots. |
+| Group reports based on saved reviews | Choose **Latest saved review in this range**. Each resident's latest matching review supplies its assessment and evidence period. |
 
-**Standard Word** is an explicit option. Those downloaded files are readable and must be kept in your approved secure location. Generated files are held in the signed-in session and are not written to GitHub or server disk by the app.
+Current dashboard evidence is the default for CCC summaries and progress reports, including group reports. CCC letters require a saved review. For a group of letters, the app uses each resident's latest review with a meeting date in the selected range and identifies any resident without one.
 
-The upstream `msoffcrypto-tool` documentation describes its OOXML encryption support as experimental. Automated roundtrip, wrong-password, and integrity tests pass; open a protected fictional report in your actual Microsoft Word version as part of acceptance testing. Protection failures never fall back to a readable file.
+### Download the Word files
+
+Select **Prepare Word download**, then **Download Word file** or **Download Word files**. No export passphrase is requested. The files are ordinary, editable `.docx` documents that open directly in Word. A filename includes the evidence end date, resident name, and report type; a fictional example is `2026-10-20_Alex_Example_CCC_Summary.docx`. Multiple reports are downloaded together in a ZIP.
+
+App sign-in is still required, and records stored in GitHub remain encrypted. Save and share the downloaded Word files through your program's usual secure workflow. Generated downloads are held in the signed-in session and are not written to GitHub or server disk by the app.
 
 ## One-time deployment
 
@@ -179,21 +211,21 @@ Run the helper again and choose **`user`**. That mode generates only a new accou
 
 | Role | Access |
 | --- | --- |
-| Admin | View and export; upload files; edit the roster and settings; create, finalize, and reopen reviews; back up and restore records. |
-| Reviewer | View and export; create and finalize CCC reviews. |
+| Admin | View and export; upload files; edit the roster, yearly progress, and settings; create, finalize, and reopen reviews; back up and restore records. |
+| Reviewer | View and export; update yearly progress; create and finalize CCC reviews. |
 | Viewer | View dashboards and export documents. |
 
 Use `enabled = false` to disable an account. Account removal, password changes, role changes, or disablement are checked on app reruns. Inactive sessions expire after 30 minutes by default, with an eight-hour maximum. A background check closes an active browser session after expiry; logout clears its application session data. Login attempts are limited per account and across the server process. Those limits reset on a process restart and do not coordinate multiple replicas; use hosting-level controls where needed.
 
 ## Saving, corrections and recovery
 
-All resident records, names, comments, source filenames, review fields, name aliases, settings and audit events are encrypted before persistence. Original uploads, when retained, use separate encrypted files with random names. GitHub sees ciphertext and generic filenames/commit messages; it still sees repository/account metadata, sizes and change times. The encryption key and token stay outside the repository.
+All resident records, names, comments, source filenames, review fields, yearly progress and its history, name aliases, settings and audit events are encrypted before persistence. Original uploads, when retained, use separate encrypted files with random names. GitHub sees ciphertext and generic filenames/commit messages; it still sees repository/account metadata, sizes and change times. The encryption key and token stay outside the repository.
 
 Normal dashboard navigation reads the loaded signed-in session, so every tab change does not reload the entire archive. Saving is explicit and checks the GitHub file version originally loaded. If another person saved first, the app refuses to overwrite their change. On a connection problem, it shows **Not saved** and preserves the last confirmed state. Download the pending changes as an encrypted file if needed, then reload and reapply the changes to the newer version. There is no forced-overwrite button.
 
 Repeated identical uploads are detected. Exact evidence duplicates are skipped while preserving separate event counts where the source supplies distinct IDs. Changed or ambiguous overlapping events are flagged for review. A complete corrected export can replace a selected earlier upload; the entire prior upload is excluded from live views. An administrator can also exclude an incorrect upload with a reason. Historical final review snapshots remain intact.
 
-The encrypted dashboard backup includes parsed evidence, residents, reviews and audit history. It **does not include the separately encrypted original file copies**. Those remain in the data repository; preserve that repository and the encryption key as part of your recovery plan. Restore previews the resident, evidence and review counts and requires explicit confirmation before replacing the dashboard. A backup restored into a different repository will not automatically move its original-file objects.
+The encrypted dashboard backup includes parsed evidence, residents, yearly progress and its dated history, reviews and audit history. It **does not include the separately encrypted original file copies**. Those remain in the data repository; preserve that repository and the encryption key as part of your recovery plan. Restore previews the resident, evidence and review counts and requires explicit confirmation before replacing the dashboard. A backup restored into a different repository will not automatically move its original-file objects.
 
 Data serialization is compressed inside the authenticated encryption envelope to reduce repeated four-year narrative and snapshot content. The limits are 64 MiB of expanded dashboard JSON, 8 MiB of compressed state, 15 MiB per original upload, and a 60 MiB/30-file upload batch. Exceeding a limit blocks the save rather than dropping old records. For a program that grows beyond this small-team archive design, move the persistence layer to an approved database/object store while keeping the app's resident model and UI.
 
@@ -202,12 +234,12 @@ Retain previous encryption keys in `previous_keys` when introducing a new curren
 ## Acceptance check before real data
 
 1. Confirm signed-out users see no resident data and each account has the intended role.
-2. Save the fictional roster and one example of every report category. Refresh, sign out, sign back in, and confirm the records remain.
+2. Save the fictional roster and one example file, leaving the other upload areas empty. Refresh, sign out, sign back in, and confirm the records remain. Practise additional report categories as needed.
 3. Reimport the same file and confirm counts do not increase. Check a corrected export and the replacement preview.
 4. Check a current deidentified export from each distinct source format: Medicine evaluation, Pediatrics evaluation, SAR, each specialty's milestone PDF, procedure logger, conference attendance, shift log, and duty-hour violation report.
 5. Compare resident names, actual evidence dates, evaluation counts, question responses/comments, and scores against those exports. Confirm each specialty's PDF has explicit, unambiguous score labels.
-6. Finalize a fictional review, add later evidence, and verify the final report still reflects the saved meeting evidence.
-7. Open a password-protected fictional report and letter in the Word version your team uses. Test an encrypted backup restore in the test deployment.
+6. Save yearly progress at two dates and check a report with an earlier cutoff. Finalize a fictional review, add later evidence and yearly values, and verify the final report retains its saved snapshots.
+7. Open a fictional CCC summary, progress report, and letter in the Word version your team uses. Check the dates, resident filename, and separate evaluation pages. No export passphrase is needed. Test an encrypted backup restore in the test deployment.
 8. Use two signed-in sessions to confirm an older save is refused after the other session saves.
 
 Automated tests use synthetic inputs and mocked GitHub responses. Run them with:
@@ -221,7 +253,7 @@ Current project-specific verification results are documented in `VALIDATION.md`.
 
 ## Existing REDCap records
 
-The supplied PDF depicts one populated PGY1 midyear dashboard, not a data dictionary or a complete four-year data export. This package does not claim to have migrated the residents shown in the source material. Original New Innovations evidence can be imported directly, and earlier CCC narratives can be entered into their dated reviews. A bulk historical migration needs the REDCap CSV plus its data dictionary, with explicit resident and date mapping. See `MIGRATION_NOTES.md` for the preserved fields and changed behavior.
+The supplied REDCap PDF depicts one populated PGY1 midyear dashboard, not a data dictionary or a complete four-year data export. The supplied Word example and report notebook guide the CCC summary layout. This package does not claim to have migrated the residents shown in the source material. Original New Innovations evidence can be imported directly, and earlier CCC narratives can be entered into their dated reviews. A bulk historical migration needs the REDCap CSV plus its data dictionary, with explicit resident and date mapping. See `MIGRATION_NOTES.md` for the preserved fields and changed behavior.
 
 ## Source documentation
 
@@ -231,4 +263,3 @@ The supplied PDF depicts one populated PGY1 midyear dashboard, not a data dictio
 - [GitHub repository contents API](https://docs.github.com/en/rest/repos/contents)
 - [Cryptography Fernet and MultiFernet](https://cryptography.io/en/stable/fernet/)
 - [Argon2 password hashing](https://argon2-cffi.readthedocs.io/en/stable/howto.html)
-- [Office document protection support and limitations](https://msoffcrypto-tool.readthedocs.io/en/latest/)

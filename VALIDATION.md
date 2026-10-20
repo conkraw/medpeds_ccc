@@ -1,5 +1,19 @@
 # Validation record
 
+## Yearly progress and CCC summary, version 1.1.0
+
+On October 20, 2026 UTC, the complete suite passed on Python 3.14.8: 344 tests and eight subtests in 20.25 seconds. The 27 production Streamlit AppTests also passed separately in 8.89 seconds. All automated fixtures are fictional, and application tests block real network requests.
+
+Yearly progress checks cover Pediatrics ITE scores and expected pass rates, Medicine ITE scores and percentiles, separate adult/pediatric clinic tallies, and four individual observed encounters. Blanks and entered zeros remain distinct. Encounters retain Not recorded, Not completed, and Completed states. Updates preserve dated prior values, and separate training-year intervals remain distinct even when their PGY and academic-year labels match. Explicitly finalized reviews freeze annual values and evidence from training start through the cutoff, alongside their existing review-period snapshots. Removal also removes the selected resident's yearly entries and history.
+
+The Streamlit checks exercise saving partial yearly information, returning to update it, switching PGYs without copying values, viewer read-only access, and keeping the selected resident when opening Yearly progress from Resident review. Report checks verify ordinary editable Word downloads without an export passphrase, defaults from each resident's own start date through today, group downloads with individual start dates, and clearing a previous download after preparation fails. The fictional preview was also checked with ten annual entries across four residents and a preserved final annual snapshot.
+
+The CCC summary generator was compared with the supplied report notebook and Word example. Its baseline has the example's 27 tables, section order, Arial fonts, table widths, narrow margins, header colors, signature lines, and Medicine/Pediatrics exam notation. Evaluation tables keep the original ten-column grid with date/rotation/evaluator spans and full-width narrative rows. Tests cover exact structure, no fixed evaluation limit, long narratives, zero and nonnumeric responses, completion-date cutoffs, Final snapshots, old snapshot fallback, and current evidence remaining independent of older narrative reviews. Conference values keep their source units and periods.
+
+`Example_CCC_Summary.docx` was generated from fictional data, rendered, and visually inspected on all five pages. Section headings stay with their first content row, and small milestone matrices remain together. Medicine evaluations begin on page four and Pediatrics evaluations on page five in this sample. Longer evidence can add pages. Combined evaluations and self-assessments receive additional pages when present. Existing Final reviews without the newer cumulative or annual snapshots use only their available preserved data. A Final review missing its preserved resident profile stops with an actionable message instead of inserting current profile fields.
+
+App sign-in, encrypted GitHub records and original files, public/private repository support, name-based matching, resident removal, and optional single-file uploads remain in place. Existing encrypted state is accepted without changing Secrets or regenerating keys. No live GitHub or Streamlit deployment was changed from this workspace.
+
 ## Resident removal and optional uploads, version 1.0.4
 
 On October 19, 2026 UTC, the complete suite passed on Python 3.14.8: 256 tests and eight subtests in 10.55 seconds. The targeted model, upload workflow, and Streamlit checks passed separately with 92 tests in 7.54 seconds. All checks used fictional data and simulated persistence, with real network requests blocked in the application tests.
@@ -60,8 +74,9 @@ This is a working first implementation prepared for a test deployment. These che
 | Resident model | Exact and alias matching, ambiguous names, duplicates and corrections, native event IDs, source exclusion, evidence periods, complete snapshot coverage, repeated training years, final review snapshots, and review reopening/version history. |
 | Encrypted storage | Authenticated encryption, key compatibility, bounded compressed state, invalid or truncated inputs, repository identity/branch verification, immutable reads, content hashes, explicit missing-file handling, SHA conflicts, ambiguous saves, and immutable original-file retries. |
 | Access and passwords | Argon2id password verification, account configuration, session expiry, role restrictions, failed-login handling, attempt limits, and clearing password input state. |
-| Word reports | All evidence categories, retained narrative details, separate specialties, assessment fields, explicit CCC decisions, final snapshots, prior versions, invalid ownership, and unassessed or zero values. |
-| Word protection | Password-to-open roundtrip, wrong passwords, integrity failures, exact recovered document bytes, passphrase validation, and fail-closed behavior. |
+| Word reports | CCC template dimensions, fonts, colors, column spans, section order, and separate Medicine/Pediatrics page starts; dated yearly values and cumulative evidence; retained narrative details, final snapshots, prior versions, invalid ownership, and unassessed or zero values. |
+| Yearly progress | Optional exam/clinic values, valid percentages and whole-number tallies, separate encounter states, dated updates, repeated training-year intervals, historical report cutoffs, frozen final snapshots, and resident removal. |
+| Legacy Word-protection utility | Its password-to-open roundtrip, wrong-password, integrity, and validation tests remain. Version 1.1.0 downloads ordinary Word files and does not call this optional utility. |
 | Streamlit app | Production configuration and login gates, fictional preview, role-aware navigation, review persistence, duplicate review protection, snapshot export, failed save feedback, successful exports, and invalidation of old downloads after export failure. |
 
 The eight fictional evidence CSV files were also run through parsing, resident matching, application import, and state validation together: all succeeded, producing 15 evidence records. The fictional roster provides the matching resident.
@@ -73,7 +88,7 @@ The two supplied sample documents contain only fictional resident information. T
 - `Example_Resident_Progress_Report.docx`: six pages, including the assessment, specialty-specific evidence, and detailed feedback.
 - `Example_CCC_Letter.docx`: one page.
 
-The supplied samples are ordinary editable Word documents so their layouts can be reviewed immediately. The app defaults to password-protected exports when it is used with resident data.
+All supplied samples and app downloads are ordinary editable Word documents. Version 1.1.0 removes the export-passphrase step at the user's request. App sign-in and encrypted GitHub records remain in place.
 
 ## Scope of source review
 
@@ -89,7 +104,7 @@ The following require the intended accounts, installed software, or current expo
 2. A deployed Streamlit session using the institution's actual sharing and access settings.
 3. Browser interaction and concurrent saves using two actual staff accounts. AppTests exercise Streamlit through its testing API, not a browser.
 4. Comparison against a current deidentified example of every New Innovations report layout the program intends to upload, especially each specialty's milestone PDF.
-5. Opening a password-protected report and letter in the team's actual Microsoft Word version. The encryption library labels OOXML encryption experimental; automated integrity and decryption checks do not replace this compatibility check.
+5. Opening the CCC summary, detailed report, and letter in the team's actual Microsoft Word version. Table layout was rendered and inspected locally, but pagination can vary with the evidence length and Word installation.
 6. Historical REDCap migration. A CSV export and matching data dictionary are needed to map prior residents and reviews explicitly.
 7. Institutional review of hosting, access, retention, and backup arrangements for the information involved.
 
@@ -97,7 +112,7 @@ The README contains a short acceptance sequence for completing these checks with
 
 ## Reproduce automated checks
 
-From the project directory, in a Python 3.12 virtual environment:
+From the project directory, in a Python 3.14 virtual environment:
 
 ```bash
 python -m pip install -r requirements-dev.txt
