@@ -12,14 +12,15 @@ import io
 from datetime import date
 from pathlib import Path
 
-import msoffcrypto
+from docx import Document
+from zipfile import ZipFile
 import pytest
 import requests
 from cryptography.fernet import Fernet
 from streamlit.testing.v1 import AppTest
 
 from ccc import model as m
-from ccc import export_security, security, ui
+from ccc import annual, ccc_summary, security, ui
 from ccc.storage import ConflictError, StorageError
 
 APP = Path(__file__).resolve().parents[1] / "app.py"
@@ -469,49 +470,138 @@ def test_reviewer_saves_draft_then_finalizes_its_evidence_snapshot(app_factory):
     assert len(backend.saves) == 2
 
 
-def test_default_word_export_is_password_protected_and_decryptable(app_factory, monkeypatch):
+def test_default_ccc_summary_opens_without_a_passphrase_and_uses_start_through_today(app_factory, monkeypatch):
     create, backend = app_factory
+    state = backend.destinations["private-data"]
+    state["residents"][0]["start_date"] = "2023-07-01"
     app = login(create(), "viewer")
     navigate(app, "Word reports")
-    assert by_label(app.radio, "Download protection").value == "Password-protected Word"
-    export_password = "A separate synthetic Word export passphrase 345!"
-    by_label(app.text_input, "Export passphrase").set_value(export_password)
-    by_label(app.text_input, "Confirm export passphrase").set_value(export_password)
+    assert by_label(app.radio, "Document").value == "CCC summary"
+    assert by_label(app.date_input, "Reporting period starts").value == date(2023, 7, 1)
+    assert by_label(app.date_input, "Evidence through").value == date(2026, 10, 17)
+    assert not any("passphrase" in item.label.lower() for item in app.text_input)
     by_label(app.button, "Prepare Word download").click().run()
     no_exceptions(app)
     generated = app.session_state["generated_export"]
-    assert generated["protected"] is True
-    assert "Alex" not in generated["filename"]
-    assert generated["data"].startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
-    office = msoffcrypto.OfficeFile(io.BytesIO(generated["data"]))
-    office.load_key(password=export_password, verify_password=True)
-    plain = io.BytesIO()
-    office.decrypt(plain, verify_integrity=True)
-    assert plain.getvalue().startswith(b"PK")
+    assert generated["protected"] is False
+    assert generated["filename"] == "2026-10-17_Alex_Fictional_CCC_Summary.docx"
+    doc = Document(io.BytesIO(generated["data"]))
+    assert len(doc.tables) == 27
+    assert doc.tables[-2].cell(0, 0).text == "MEDICINE EVALUATION SUMMARY"
+    assert doc.tables[-1].cell(0, 0).text == "PEDIATRIC EVALUATION SUMMARY"
+    assert "2023-07-01 to 2026-10-17" in "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
     assert not backend.saves
-    assert by_label(app.text_input, "Export passphrase").value == ""
-    assert by_label(app.text_input, "Confirm export passphrase").value == ""
     assert app.session_state.get("export_password", "") == ""
     assert app.session_state.get("export_confirmation", "") == ""
 
-    # A failure preparing a second download must discard the earlier download
-    # and clear both password widgets, including their server-side named state.
-    def fail_protection(_docx, _password):
-        raise export_security.ExportSecurityError("Synthetic protection failure for this test.")
+    # A failed second export must remove the previous resident download.
+    def fail_report(*_args, **_kwargs):
+        raise m.ValidationError("Synthetic report preparation failure.")
 
-    monkeypatch.setattr(export_security, "protect_docx", fail_protection)
-    second_password = "Synthetic second export passphrase that must fail 456!"
-    by_label(app.text_input, "Export passphrase").set_value(second_password)
-    by_label(app.text_input, "Confirm export passphrase").set_value(second_password)
+    monkeypatch.setattr(ccc_summary, "build_ccc_summary", fail_report)
     by_label(app.button, "Prepare Word download").click().run()
     no_exceptions(app)
     assert "generated_export" not in app.session_state
     assert not app.download_button
-    assert any("Synthetic protection failure" in error.value for error in app.error)
-    assert by_label(app.text_input, "Export passphrase").value == ""
-    assert by_label(app.text_input, "Confirm export passphrase").value == ""
-    assert app.session_state.get("export_password", "") == ""
-    assert app.session_state.get("export_confirmation", "") == ""
+    assert any("Synthetic report preparation failure" in error.value for error in app.error)
+
+
+def test_yearly_progress_saves_optional_values_and_keeps_other_years_separate(app_factory):
+    create, backend = app_factory
+    app = login(create(), "reviewer")
+    navigate(app, "Yearly progress")
+    assert by_label(app.selectbox, "Residency year").value == 1
+    assert all(item.value is None for item in app.number_input)
+    by_label(app.number_input, "Pediatrics ITE score").set_value(71)
+    by_label(app.number_input, "Pediatrics expected pass rate (%)").set_value(93)
+    by_label(app.number_input, "Medicine ITE score").set_value(75)
+    by_label(app.number_input, "Medicine ITE percentile").set_value(68)
+    by_label(app.number_input, "Adult clinic patient tally").set_value(0)
+    by_label(app.selectbox, "Observed encounter 1").set_value(True)
+    by_label(app.selectbox, "Observed encounter 2").set_value(False)
+    by_label(app.button, "Save yearly progress").click().run()
+    no_exceptions(app)
+    entry = app.session_state["state"]["annual_progress"][0]
+    assert entry["pgy"] == 1 and entry["as_of"] == "2026-10-17"
+    assert entry["fields"] == {"pediatrics_ite_score": 71, "pediatrics_ite_expected_pass_rate": 93,
+                               "medicine_ite_score": 75, "medicine_ite_percentile": 68,
+                               "adult_clinic_count": 0, "pediatric_clinic_count": None,
+                               "observed_encounter_1": True, "observed_encounter_2": False,
+                               "observed_encounter_3": None, "observed_encounter_4": None}
+    by_label(app.number_input, "Pediatric clinic patient tally").set_value(25)
+    by_label(app.button, "Save yearly progress").click().run()
+    no_exceptions(app)
+    updated = app.session_state["state"]["annual_progress"][0]
+    assert updated["fields"]["pediatric_clinic_count"] == 25
+    assert updated["fields"]["medicine_ite_score"] == 75
+    assert updated["versions"][0]["fields"]["pediatric_clinic_count"] is None
+    by_label(app.selectbox, "Residency year").set_value(2).run()
+    no_exceptions(app)
+    assert all(item.value is None for item in app.number_input)
+    by_label(app.number_input, "Adult clinic patient tally").set_value(44)
+    by_label(app.button, "Save yearly progress").click().run()
+    no_exceptions(app)
+    entries = app.session_state["state"]["annual_progress"]
+    assert len(entries) == 2 and entries[0]["fields"]["adult_clinic_count"] == 0
+    assert entries[1]["pgy"] == 2 and entries[1]["fields"]["adult_clinic_count"] == 44
+    assert len(backend.saves) == 3
+    # Future-year values are saved, but do not appear in a report before that year.
+    navigate(app, "Word reports")
+    by_label(app.button, "Prepare Word download").click().run()
+    no_exceptions(app)
+    doc = Document(io.BytesIO(app.session_state["generated_export"]["data"]))
+    ite = next(table for table in doc.tables if table.cell(0, 0).text == "IN-TRAINING EXAM SCORES")
+    assert "75 (68%tile)" in "\n".join(cell.text for row in ite.rows for cell in row.cells)
+    clinic = next(table for table in doc.tables if table.cell(0, 0).text == "ADULT AND PEDIATRIC CLINIC PATIENT TALLY")
+    assert "44" not in "\n".join(cell.text for row in clinic.rows for cell in row.cells)
+
+
+def test_viewer_sees_yearly_progress_but_cannot_change_it(app_factory):
+    create, backend = app_factory
+    state = backend.destinations["private-data"]
+    entry = annual.default_progress(state["residents"][0], 1, "2026-10-01")
+    entry["fields"]["medicine_ite_score"] = 70
+    backend.destinations["private-data"] = annual.save_progress(state, "resident-alex", entry, "setup")
+    app = login(create(), "viewer")
+    navigate(app, "Yearly progress")
+    assert app.dataframe[0].value.iloc[0]["Medicine score"] == 70
+    assert not app.number_input
+    assert not any(button.label == "Save yearly progress" for button in app.button)
+    assert not backend.saves
+
+
+def test_resident_to_yearly_progress_link_keeps_the_selected_resident(app_factory):
+    create, backend = app_factory
+    backend.destinations["private-data"] = m.save_resident(backend.destinations["private-data"],
+        {"id": "resident-casey", "name": "Casey Fictional", "start_date": "2024-07-01"}, "setup")
+    app = login(create())
+    navigate(app, "Resident review")
+    by_label(app.selectbox, "Find a resident").set_value("resident-casey").run()
+    by_label(app.button, "Open yearly exam scores, clinic tallies and encounters").click().run()
+    no_exceptions(app)
+    assert by_label(app.radio, "Go to").value == "Yearly progress"
+    assert by_label(app.selectbox, "Find a resident").value == "resident-casey"
+
+
+def test_bulk_ccc_summaries_default_to_each_residents_own_start_date(app_factory):
+    create, backend = app_factory
+    backend.destinations["private-data"] = m.save_resident(backend.destinations["private-data"],
+        {"id": "resident-casey", "name": "Casey Fictional", "start_date": "2024-07-01"}, "setup")
+    app = login(create(), "viewer")
+    navigate(app, "Word reports")
+    by_label(app.radio, "Who is this for?").set_value("Several residents").run()
+    no_exceptions(app)
+    assert by_label(app.radio, "Report start dates").value == "Each resident's start date"
+    assert by_label(app.radio, "Group report basis").value == "Current dashboard date range"
+    by_label(app.button, "Prepare Word download").click().run()
+    no_exceptions(app)
+    with ZipFile(io.BytesIO(app.session_state["generated_export"]["data"])) as archive:
+        assert len(archive.namelist()) == 2
+        for name, start in [("Alex_Fictional", "2026-07-01"), ("Casey_Fictional", "2024-07-01")]:
+            path = next(path for path in archive.namelist() if name in path)
+            doc = Document(io.BytesIO(archive.read(path)))
+            assert start + " to 2026-10-17" in "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
+    assert not backend.saves
 
 
 def test_failed_save_preserves_saved_state_and_conflict_recovery_is_available(app_factory):
