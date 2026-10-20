@@ -26,6 +26,12 @@ from ccc.storage import (GitHubStore, StorageError, ConflictError,
                          SaveUnconfirmedError, encrypt_state, decrypt_state)
 
 
+_REVIEW_TEXT_LABELS = {
+    **m.REVIEW_TEXT_FIELDS,
+    "duty_max_hours_4weeks": "Maximum average weekly hours over a 28-day window",
+}
+
+
 def _clear_session() -> None:
     for key in list(st.session_state):
         del st.session_state[key]
@@ -396,7 +402,7 @@ def _show_milestones(records: list[dict]) -> None:
     elif series["Score"].notna().sum() > 1:
         st.line_chart(series.dropna(subset=["Score"]).drop_duplicates(["Date", "Score"]).set_index("Date")[["Score"]], y_label="Recorded score")
     st.dataframe(df, hide_index=True, width="stretch")
-    st.caption("Medicine and Pediatrics use different milestone sets. Unassessed items remain blank; the app does not translate scores into readiness decisions.")
+    st.caption("Medicine and Pediatrics use different milestone sets. The dashboard shows recorded scores and leaves unassessed items blank. The Word report includes the notebook's calculated trend and readiness descriptions for committee review.")
 
 
 def _show_evidence(state: dict, resident: dict, records: list[dict], start: str, end: str) -> None:
@@ -621,7 +627,7 @@ def _review_editor(state: dict, resident: dict, store: GitHubStore | None) -> No
     review = lookup.get(chosen)
     if review and review["status"] == "Final":
         st.success(f"Finalized on {_pretty_time(review['finalized_at'])}. Its evidence is preserved.")
-        for key, label in m.REVIEW_TEXT_FIELDS.items():
+        for key, label in _REVIEW_TEXT_LABELS.items():
             if review["fields"].get(key):
                 st.markdown(f"**{label}**")
                 st.text(review["fields"][key])
@@ -666,12 +672,13 @@ def _review_editor(state: dict, resident: dict, store: GitHubStore | None) -> No
             for key in ("rotation_summary", "observed_encounters_notes", "abstracts", "publications", "advocacy", "nursing_feedback", "resident_comments"):
                 edited[key] = st.text_area(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""), height=80)
         with st.expander("Practice readiness assessment"):
-            st.caption("Record the committee's assessment for each area shown in the CCC summary.")
+            st.caption("Enter the committee's assessment. The Word report also includes the notebook's calculated readiness descriptions.")
             for key in ("readiness_clinical_reasoning", "readiness_team_leadership", "readiness_learner_supervision", "readiness_communication", "readiness_professionalism", "readiness_systems_based_practice"):
                 edited[key] = st.text_input(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""))
         with st.expander("Duty-hour review notes"):
+            st.caption("For each rolling 28-day window, add the logged work hours and divide by four. Enter the highest weekly average and its window below.")
             for key in ("duty_min_days_off", "duty_days_off_window", "duty_days_off_rotations", "duty_max_hours_4weeks", "duty_80_hour_window", "duty_80_hour_rotations", "duty_resolution_notes"):
-                edited[key] = st.text_input(m.REVIEW_TEXT_FIELDS[key], value=fields.get(key, ""))
+                edited[key] = st.text_input(_REVIEW_TEXT_LABELS[key], value=fields.get(key, ""))
         confirm_final = st.checkbox("I reviewed the evidence and this is the CCC's recorded assessment")
         a, b = st.columns(2)
         draft = a.form_submit_button("Save draft", width="stretch")
@@ -1243,7 +1250,7 @@ def _administration(state: dict, store: GitHubStore, keys: list[str], users: dic
                         st.info("Connection works. A newer saved version is available; use Refresh saved data in the sidebar.")
                 except (StorageError, m.ValidationError) as exc:
                     st.error(str(exc))
-        st.caption(f"App version {__version__} · No automatic readiness or duty-hour compliance decisions.")
+        st.caption(f"App version {__version__} · The dashboard shows recorded evidence. Word reports include notebook calculations for committee review.")
     with tabs[3]:
         st.subheader("Daily routine")
         st.markdown("1. Export whichever reports are ready in New Innovations.\n2. Open Upload files, choose the specialty and dates, and add one or more files. Leave unused areas empty.\n3. Process the selected files, review the entries and resident matches, then save.\n4. Open Yearly progress to enter exam results, clinic patient tallies, and observed encounters.\n5. Open Resident review to review evidence and document the CCC discussion.\n6. Open Word reports to download a CCC summary or letter.")

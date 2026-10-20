@@ -1,57 +1,32 @@
-"""CCC summaries in the program's supplied, editable table-based Word format.
+"""Adapt the encrypted dashboard data to the program's original Jupyter report.
 
-The visual reference controls table order, sizes, colors, and evaluation page
-breaks. No reference document, real resident data, or notebook execution is
-needed at runtime. Clinical assessments are entered by the committee; numerical
-changes are descriptive only. Every export is constructed in memory.
-
-Pass active evidence for the roster, all saved reviews, and the annual entries
-returned by ``annual.progress_for``. This module checks resident ownership and
-dates independently. An explicitly selected Final review uses frozen data only;
-a live export may use its latest review's narrative without freezing live data.
+All Word formatting is supplied by ``notebook_word``. This module only selects
+resident-owned, dated data and fills the notebook's existing scalar row fields.
+Final reviews use their frozen snapshots. No uploaded file or report is written
+to disk, and a report download needs no separate passphrase.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
+import html
+import json
+import math
 import re
 from typing import Any
 
-from docx import Document
-from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+import pandas as pd
 
 from ccc import model as m
+from ccc import notebook_word as word
+from ccc.annual import FIELD_LABELS as ANNUAL_LABELS
 from ccc.evaluation_summary import evaluation_rows
 from ccc.reports import _blank, _iso, _number, _text
-
-
-TABLE_WIDTH = 7.6
-BLUE = "D9EAF7"
-GREEN = "BFEDD2"
-RED = "F4CCCC"
-GRAY = "EDEDED"
-HEADER_GRAY = "D9D9D9"
-MAIN_WIDTHS = [1.8, 2.0, 1.8, 2.0]
-MILESTONE_DOMAINS = {
-    "Medicine": [("PC", 6), ("MK", 3), ("SBP", 3), ("PBLI", 2), ("PRO", 4), ("ICS", 3)],
-    "Pediatrics": [("PC", 5), ("MK", 2), ("SBP", 6), ("PBLI", 2), ("PRO", 4), ("ICS", 3)],
-}
-READINESS_FIELDS = {
-    "Clinical Reasoning": "readiness_clinical_reasoning",
-    "Team Leadership": "readiness_team_leadership",
-    "Learner Supervision": "readiness_learner_supervision",
-    "Communication": "readiness_communication",
-    "Professionalism": "readiness_professionalism",
-    "Systems-Based Practice": "readiness_systems_based_practice",
-}
 
 
 @dataclass
@@ -178,578 +153,513 @@ def _date_display(value: Any) -> str:
     return f"{parsed.month}/{parsed.day}/{parsed.year}"
 
 
-def _new_document() -> Any:
-    doc = Document()
-    section = doc.sections[0]
-    section.page_width, section.page_height = Inches(8.5), Inches(11)
-    section.top_margin = section.bottom_margin = Inches(0.2)
-    section.left_margin = section.right_margin = Inches(0.2)
-    style = doc.styles["Normal"]
-    style.font.name = "Arial"
-    style.font.size = Pt(7)
-    style.font.color.rgb = RGBColor(0, 0, 0)
-    style.paragraph_format.space_before = Pt(0)
-    style.paragraph_format.space_after = Pt(0)
-    style.paragraph_format.line_spacing = 1
-    properties = doc.core_properties
-    properties.author = ""
-    properties.last_modified_by = ""
-    properties.title = "Medicine Pediatrics CCC Summary"
-    properties.subject = "Clinical Competency Committee Summary"
-    properties.comments = ""
-    return doc
+_ANNUAL_MAP = {
+    "medicine_ite_score": "med_intran_r{pgy}",
+    "medicine_ite_percentile": "med_intranp_r{pgy}",
+    "pediatrics_ite_score": "peds_intran_r{pgy}",
+    "pediatrics_ite_expected_pass_rate": "peds_intranp_r{pgy}",
+}
+_DUTY_MAP = {
+    "duty_last_log": "dh_last_log",
+    "duty_min_days_off": "dh_min_days_off",
+    "duty_days_off_window": "dayoff_window",
+    "duty_days_off_rotations": "dayoff_rotations",
+    "duty_max_hours_4weeks": "eightyhr_max",
+    "duty_80_hour_window": "eightyhr_window",
+    "duty_80_hour_rotations": "eightyhr_rotations",
+}
+_NARRATIVE_MAP = {
+    "nursing_feedback": "360_rn",
+    "overall_impression": "overall_imp",
+    "areas_for_growth": "areas_for_growth",
+    "patterns_over_time": "patterns",
+}
+_MILESTONE_DOMAINS = {
+    "Medicine": [("pc", 6), ("mk", 3), ("sbp", 3), ("pbli", 2), ("pro", 4), ("ics", 3)],
+    "Pediatrics": [("pc", 5), ("mk", 2), ("sbp", 6), ("pbli", 2), ("pro", 4), ("ics", 3)],
+}
+_LEGACY_FIELD = re.compile(
+    r"(?:review_period|subject_status|ccc_meeting_date|rotations|ad_clinic_num|ped_clinic_num|"
+    r"360_rn|overall_imp|areas_for_growth|patterns|ccc_concerns|abstract|publications|advocacy|"
+    r"dh_last_log|dh_min_days_off|dayoff_window|dayoff_rotations|eightyhr_max|eightyhr_window|"
+    r"eightyhr_rotations|dh_comments|mp3|mp5)_r[1-4](?:my|eoy)$|"
+    r"(?:pc|mk|sbp|pbli|pro|ics)\d+(?:mm|my|pm|py)_[1-4]$|"
+    r"(?:med_intran|med_intranp|peds_intran|peds_intranp)_r[1-4]$|"
+    r"obenc[1-4]_[1-4]$|conferences_r[1-4]$|(?:procedures|step1|step2ck|step3)$"
+)
 
 
-def _table(doc: Any, widths: list[float]) -> Any:
-    table = doc.add_table(rows=0, cols=len(widths))
-    table.style = "Table Grid"
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = False
-    for column, width in zip(table.columns, widths):
-        column.width = Inches(width)
-    pr = table._tbl.tblPr
-    width = pr.find(qn("w:tblW"))
-    width.set(qn("w:w"), str(round(sum(widths) * 1440)))
-    width.set(qn("w:type"), "dxa")
-    borders = OxmlElement("w:tblBorders")
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        element = OxmlElement("w:" + edge)
-        for key, value in {"val": "single", "sz": "4", "color": "000000"}.items():
-            element.set(qn("w:" + key), value)
-        borders.append(element)
-    pr.append(borders)
-    margins = OxmlElement("w:tblCellMar")
-    for edge, amount in (("top", 0), ("bottom", 0), ("left", 108), ("right", 108)):
-        element = OxmlElement("w:" + edge)
-        element.set(qn("w:w"), str(amount))
-        element.set(qn("w:type"), "dxa")
-        margins.append(element)
-    pr.append(margins)
-    return table
+def _pgy(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    match = re.fullmatch(r"(?:PGY\s*|R)?([1-4])(?:\.0)?", _text(value), re.I)
+    return int(match[1]) if match else None
 
 
-def _cell(cell: Any, value: Any, *, size: float = 7, bold: bool = False,
-          align: str = "center", fill: str | None = None, color: str = "000000") -> None:
-    cell.text = ""
-    paragraph = cell.paragraphs[0]
-    paragraph.alignment = {"left": WD_ALIGN_PARAGRAPH.LEFT,
-                           "center": WD_ALIGN_PARAGRAPH.CENTER,
-                           "right": WD_ALIGN_PARAGRAPH.RIGHT}[align]
-    paragraph.paragraph_format.space_before = Pt(0)
-    paragraph.paragraph_format.space_after = Pt(0)
-    paragraph.paragraph_format.line_spacing = 1
-    run = paragraph.add_run(_text(value))
-    run.font.name = "Arial"
-    run.font.size = Pt(size)
-    run.font.color.rgb = RGBColor.from_string(color)
-    run.bold = bold
-    run._element.get_or_add_rPr().rFonts.set(qn("w:ascii"), "Arial")
-    run._element.get_or_add_rPr().rFonts.set(qn("w:hAnsi"), "Arial")
-    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    if fill:
-        shading = OxmlElement("w:shd")
-        shading.set(qn("w:fill"), fill)
-        cell._tc.get_or_add_tcPr().append(shading)
+def _review_target(review: dict) -> str | None:
+    pgy = _pgy(review.get("pgy"))
+    if pgy is None:
+        return None
+    return f"r{pgy}" + ("my" if review.get("half") == "Midyear" else "eoy")
 
 
-def _row(table: Any, values: list[Any], *, spans: list[int] | None = None,
-         size: float = 7, bold: bool = False, align: str = "center",
-         fill: str | None = None, color: str = "000000", repeat: bool = False,
-         height: float = 0.2, keep: bool = False) -> Any:
-    row = table.add_row()
-    row.height = Inches(height)
-    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
-    widths = [column.width for column in table.columns]
-    for cell, width in zip(row.cells, widths):
-        cell.width = width
-    spans = spans or [1] * len(values)
-    if len(values) != len(spans) or sum(spans) != len(table.columns):
-        raise ValueError("A report table row does not match its column grid.")
-    index = 0
-    for value, span in zip(values, spans):
-        cell = row.cells[index]
-        if span > 1:
-            cell = cell.merge(row.cells[index + span - 1])
-        _cell(cell, value, size=size, bold=bold, align=align, fill=fill, color=color)
-        index += span
-    if repeat:
-        element = OxmlElement("w:tblHeader")
-        element.set(qn("w:val"), "true")
-        row._tr.get_or_add_trPr().append(element)
-    if keep:
-        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
-    return row
+def _eligible_history(ctx: _Context) -> list[dict]:
+    """A meeting after the evidence cutoff must not import later source data."""
+    selected = (ctx.narrative_review or {}).get("id") if ctx.explicit_review else None
+    return [review for review in ctx.history
+            if (selected and review.get("id") == selected)
+            or (_iso(review.get("period_end")) or _iso(review.get("review_date"))) <= ctx.period_end]
 
 
-def _title(table: Any, title: str, *, fill: str = BLUE, size: float = 7) -> None:
-    _row(table, [title], spans=[len(table.columns)], bold=True, fill=fill, repeat=True, size=size)
-
-
-def _single(doc: Any, title: str, value: Any, *, fill: str = BLUE,
-            height: float = 0.2) -> None:
-    table = _table(doc, [TABLE_WIDTH])
-    _title(table, title, fill=fill)
-    _row(table, [value], align="left", height=height)
-
-
-def _page_break(doc: Any) -> None:
-    paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_before = Pt(0)
-    paragraph.paragraph_format.space_after = Pt(0)
-    paragraph.add_run().add_break(WD_BREAK.PAGE)
-
-
-def _review_label(review: dict | None, default_pgy: int = 1) -> str:
-    review = review or {}
-    pgy = review.get("pgy", default_pgy)
-    half = "MY" if review.get("half") == "Midyear" else "EOY"
-    return f"PGY{pgy} {half}"
+def _academic_start(value: Any) -> date | None:
+    try:
+        year = int(str(value).split("-")[0])
+        return date(year, 7, 1)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _year_entries(ctx: _Context) -> list[dict]:
-    """One dated annual value set per training year, with frozen legacy fallback."""
+    """Retain annual identities, with old review fields as a dated fallback."""
     legacy: dict[tuple, dict] = {}
-    for review in ctx.history:
-        pgy, academic = review.get("pgy"), review.get("academic_year")
-        if not isinstance(pgy, int) or pgy not in range(1, 5):
+    training_start = date.fromisoformat(ctx.resident["start_date"])
+    for review in _eligible_history(ctx):
+        pgy = _pgy(review.get("pgy"))
+        if pgy is None:
             continue
-        start = _iso(review.get("period_start"))
-        if not start:
-            try:
-                year = int(str(academic).split("-")[0])
-                start = date(year, 7, 1).isoformat()
-            except (ValueError, TypeError):
-                start = m.add_months(date.fromisoformat(ctx.resident["start_date"]), 12 * (pgy - 1)).isoformat()
-        fields = deepcopy(review.get("fields", {}))
-        legacy[(pgy, academic or m.academic_year(start))] = {
-            "pgy": pgy, "academic_year": academic or m.academic_year(start),
-            "period_start": start,
-            "period_end": (m.add_months(date.fromisoformat(start), 12) - timedelta(days=1)).isoformat(),
-            "as_of": _iso(review.get("period_end")) or _iso(review.get("review_date")),
-            "fields": fields, "legacy": True,
-        }
-    tracked_years = {(entry.get("pgy"), entry.get("academic_year")) for entry in ctx.tracking}
-    entries = {(entry.get("pgy"), entry.get("academic_year"), entry.get("period_start"), entry.get("period_end")): entry
-               for key, entry in legacy.items() if key not in tracked_years}
+        academic = review.get("academic_year")
+        first = _academic_start(academic) or m.add_months(training_start, 12 * (pgy - 1))
+        # A resident who starts outside July keeps that actual training year.
+        expected = m.add_months(training_start, 12 * (pgy - 1))
+        if m.academic_year(expected) == (academic or m.academic_year(first)):
+            first = expected
+        last = m.add_months(first, 12) - timedelta(days=1)
+        if first.isoformat() > ctx.period_end:
+            continue
+        identity = (pgy, academic or m.academic_year(first), first.isoformat(), last.isoformat())
+        entry = legacy.setdefault(identity, {
+            "pgy": pgy, "academic_year": identity[1], "period_start": identity[2],
+            "period_end": identity[3], "as_of": "", "fields": {}, "legacy": True,
+        })
+        entry["fields"].update(deepcopy(review.get("fields", {})))
+        entry["as_of"] = _iso(review.get("period_end")) or _iso(review.get("review_date"))
+
+    result = []
+    tracked = {(entry.get("pgy"), entry.get("academic_year")) for entry in ctx.tracking}
+    for identity, entry in legacy.items():
+        if identity[:2] not in tracked:
+            result.append(entry)
     for entry in ctx.tracking:
-        entries[(entry.get("pgy"), entry.get("academic_year"), entry.get("period_start"), entry.get("period_end"))] = deepcopy(entry)
-    recorded_pgy = {key[0] for key in entries}
+        if _pgy(entry.get("pgy")) is None or (_iso(entry.get("period_start")) or "9999") > ctx.period_end:
+            continue
+        item = deepcopy(entry)
+        fallback = [value for identity, value in legacy.items()
+                    if identity[:2] == (entry.get("pgy"), entry.get("academic_year"))]
+        # Modern fields, including explicitly cleared blanks, take precedence.
+        base = deepcopy(fallback[-1]["fields"]) if fallback else {}
+        item["fields"] = {**base, **item.get("fields", {})}
+        result.append(item)
+    present = {_pgy(entry.get("pgy")) for entry in result}
     for pgy in range(1, ctx.pgy + 1):
-        if pgy not in recorded_pgy:
-            start = m.add_months(date.fromisoformat(ctx.resident["start_date"]), 12 * (pgy - 1))
-            if start.isoformat() <= ctx.period_end:
-                entries[(pgy, m.academic_year(start), start.isoformat(), (m.add_months(start, 12) - timedelta(days=1)).isoformat())] = {
-                    "pgy": pgy, "academic_year": m.academic_year(start), "period_start": start.isoformat(),
-                    "period_end": (m.add_months(start, 12) - timedelta(days=1)).isoformat(), "fields": {}, "as_of": "",
-                }
-    return sorted(entries.values(), key=lambda e: (e.get("period_start", ""), e.get("pgy", 0)))
+        first = m.add_months(training_start, 12 * (pgy - 1))
+        if pgy not in present and first.isoformat() <= ctx.period_end:
+            result.append({"pgy": pgy, "academic_year": m.academic_year(first),
+                           "period_start": first.isoformat(),
+                           "period_end": (m.add_months(first, 12) - timedelta(days=1)).isoformat(),
+                           "as_of": "", "fields": {}})
+    return sorted(result, key=lambda entry: (entry.get("period_start", ""), entry.get("as_of", ""),
+                                             entry.get("period_end", ""), entry.get("pgy", 0)))
 
 
-def _year_label(entry: dict, entries: list[dict]) -> str:
-    pgy = entry.get("pgy")
-    repeated = sum(e.get("pgy") == pgy for e in entries) > 1
-    same_year = sum(e.get("pgy") == pgy and e.get("academic_year") == entry.get("academic_year") for e in entries) > 1
-    label = f"PGY{pgy}" + (f"\n{entry.get('academic_year', '')}" if repeated else "")
-    if same_year:
-        label += f"\n{entry.get('period_start', '')} to {entry.get('period_end', '')}"
+def _entry_label(entry: dict) -> str:
+    label = f"PGY{entry['pgy']}"
+    if entry.get("academic_year"):
+        label += f" ({entry['academic_year']})"
+    if entry.get("period_start") and entry.get("period_end"):
+        label += f", {entry['period_start']} to {entry['period_end']}"
+    if entry.get("as_of"):
+        label += f", recorded through {entry['as_of']}"
     return label
+
+
+def _training_year_start(ctx: _Context, pgy: int, observed: str, entries: list[dict]) -> date:
+    matches = [entry for entry in entries if _pgy(entry.get("pgy")) == pgy
+               and (_iso(entry.get("period_start")) or "9999") <= observed
+               <= (_iso(entry.get("period_end")) or "")]
+    for entry in reversed(matches):
+        first, last = date.fromisoformat(entry["period_start"]), date.fromisoformat(entry["period_end"])
+        if (last - first).days >= 300:
+            return first
+    if matches:
+        first = _academic_start(matches[-1].get("academic_year"))
+        if first:
+            return first
+    scheduled = m.add_months(date.fromisoformat(ctx.resident["start_date"]), 12 * (pgy - 1))
+    if scheduled.isoformat() <= observed < m.add_months(scheduled, 12).isoformat():
+        return scheduled
+    # Source PGY may describe a repeated/extended year. Never apply the current
+    # roster override to older evidence. Retain its observed academic period.
+    return _academic_start(m.academic_year(observed)) or scheduled
 
 
 def _record_year(record: dict, ctx: _Context, entries: list[dict]) -> tuple[int, str]:
     observed = _iso(record.get("date")) or _iso(record.get("period_end"))
-    for entry in reversed(entries):
-        first, last = _iso(entry.get("period_start")), _iso(entry.get("period_end"))
-        if first and last and first <= observed <= last:
-            return int(entry["pgy"]), str(entry.get("academic_year", m.academic_year(first)))
-    when = date.fromisoformat(observed)
-    pgy = min(4, max(1, m.current_pgy(ctx.resident, when)))
-    return pgy, m.academic_year(when)
+    supplied = _pgy(record.get("pgy"))
+    matches = [entry for entry in entries if (_iso(entry.get("period_start")) or "9999") <= observed
+               <= (_iso(entry.get("period_end")) or "")]
+    if supplied is not None:
+        matches = [entry for entry in matches if _pgy(entry.get("pgy")) == supplied]
+        academic = matches[-1].get("academic_year") if matches else m.academic_year(observed)
+        return supplied, str(academic)
+    if matches:
+        return int(matches[-1]["pgy"]), str(matches[-1].get("academic_year") or m.academic_year(observed))
+    historic_profile = {**ctx.resident, "pgy_override": None}
+    return min(4, max(1, m.current_pgy(historic_profile, observed))), m.academic_year(observed)
 
 
-def _identity(doc: Any, ctx: _Context) -> None:
-    table = _table(doc, MAIN_WIDTHS)
-    half = "MID-YEAR" if ctx.half == "Midyear" else "END-OF-YEAR"
-    _title(table, f"MEDICINE PEDIATRICS {half} SUMMARY")
-    period = f"{ctx.period_start} to {ctx.period_end}"
-    if ctx.limited_final_history:
-        period += "\nHistorical data limited to this saved review"
-    rows = [
-        ["RESIDENT NAME:", ctx.resident.get("name", ""), "TRAINING LEVEL:", f"R{ctx.pgy}"],
-        ["COACH NAME:", ctx.fields.get("coach_name", ctx.resident.get("coach_name", "")), "REVIEW PERIOD:", period],
-        ["CCC MEETING DATE:", (ctx.narrative_review or {}).get("review_date", ""), "GRADUATION DATE:", ctx.resident.get("graduation_date", "")],
-    ]
-    for values in rows:
-        row = _row(table, values)
-        for i in (0, 2):
-            _cell(row.cells[i], values[i], bold=True)
-    rotations = ctx.fields.get("rotation_summary", "")
-    if _blank(rotations):
-        rotations = "; ".join(dict.fromkeys(_text(r.get("rotation")) for r in ctx.evidence if _text(r.get("rotation"))))
-    _single(doc, "ROTATIONS SINCE LAST REVIEW", rotations, height=0.4)
+def _target(ctx: _Context, entries: list[dict]) -> str:
+    if ctx.explicit_review:
+        return _review_target(ctx.narrative_review or {}) or f"r{ctx.pgy}eoy"
+    if m.current_pgy(ctx.resident, ctx.period_end) > 4 and not any(
+        entry.get("pgy") == 4 and entry.get("fields")
+        and entry.get("period_start", "9999") <= ctx.period_end <= entry.get("period_end", "")
+        for entry in entries
+    ):
+        # A report generated after the four-year program retains PGY4 EOY.
+        return "r4eoy"
+    first = _training_year_start(ctx, ctx.pgy, ctx.period_end, entries)
+    half = "my" if ctx.period_end < m.add_months(first, 6).isoformat() else "eoy"
+    return f"r{ctx.pgy}{half}"
 
 
-def _clinic(doc: Any, entries: list[dict]) -> None:
-    table = _table(doc, MAIN_WIDTHS)
-    _title(table, "ADULT AND PEDIATRIC CLINIC PATIENT TALLY")
-    for entry in entries or [{"pgy": 1, "fields": {}}]:
-        fields = entry.get("fields", {})
-        label = _year_label(entry, entries)
-        values = [f"ADULT {label}", _fmt(fields.get("adult_clinic_count")),
-                  f"PEDIATRIC {label}", _fmt(fields.get("pediatric_clinic_count"))]
-        row = _row(table, values)
-        for i in (0, 2):
-            _cell(row.cells[i], values[i], bold=True)
+def _paragraphs(parts: Iterable[Any]) -> str:
+    """Escape admin-entered plain text before the notebook's HTML cleanup."""
+    return "".join("<p>" + html.escape(_scalar(part)).replace("\n", "<br>") + "</p>"
+                   for part in parts if not _blank(part))
 
 
-def _procedures(doc: Any, ctx: _Context) -> None:
-    title = _table(doc, [TABLE_WIDTH])
-    _title(title, "PROCEDURES LOGGED TO DATE")
-    table = _table(doc, [TABLE_WIDTH / 10] * 10)
-    _row(table, ["PROCEDURE", "LAST DATE LOGGED", "NUMBER LOGGED"], spans=[4, 3, 3],
-         size=6, bold=True, fill=HEADER_GRAY, repeat=True)
-    groups: dict[tuple, list[dict]] = defaultdict(list)
+def _scalar(value: Any) -> str:
+    """Keep notebook HTML intact while removing invalid XML control characters."""
+    if _blank(value):
+        return ""
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]", "", str(value))
+
+
+def _join_distinct(parts: Iterable[Any], separator: str = "\n\n") -> str:
+    return separator.join(dict.fromkeys(_text(part) for part in parts if not _blank(part)))
+
+
+def _annual_fields(row: dict, ctx: _Context, entries: list[dict], target: str, notes: list[str]) -> None:
+    by_pgy: dict[int, list[dict]] = defaultdict(list)
+    for entry in entries:
+        by_pgy[int(entry["pgy"])].append(entry)
+    for pgy, candidates in by_pgy.items():
+        selected = max(candidates, key=lambda entry: (entry.get("as_of", ""), entry.get("period_start", ""),
+                                                      entry.get("period_end", "")))
+        fields = selected.get("fields", {})
+        for modern, legacy in _ANNUAL_MAP.items():
+            if modern in fields:
+                row[legacy.format(pgy=pgy)] = _fmt(fields[modern])
+        checkpoint = target if pgy == ctx.pgy else f"r{pgy}eoy"
+        for modern, legacy in (("adult_clinic_count", "ad_clinic_num"), ("pediatric_clinic_count", "ped_clinic_num")):
+            if modern in fields:
+                row[f"{legacy}_{checkpoint}"] = _fmt(fields[modern])
+        for number in range(1, 5):
+            key = f"observed_encounter_{number}"
+            if key in fields:
+                value = fields[key]
+                row[f"obenc{number}_{pgy}"] = "1" if value is True else "0" if value is False else ""
+                if value is False and len(candidates) == 1:
+                    notes.append(f"{_entry_label(selected)}: observed encounter {number} not completed.")
+        # The notebook has one cell per PGY. Additional annual identities are
+        # preserved in its existing CCC narrative, without changing its grid.
+        if len(candidates) > 1 or pgy > ctx.pgy:
+            for entry in candidates:
+                details = []
+                for key, label in ANNUAL_LABELS.items():
+                    value = entry.get("fields", {}).get(key)
+                    if value is None:
+                        continue
+                    display = "Completed" if value is True else "Not completed" if value is False else _fmt(value)
+                    if display:
+                        details.append(f"{label}: {display}")
+                if details:
+                    notes.append("Annual progress: " + _entry_label(entry) + "\n" + "\n".join(details))
+        for entry in candidates:
+            old = entry.get("fields", {})
+            if not _blank(old.get("pediatrics_ite_percentile")):
+                notes.append(f"{_entry_label(entry)}: Pediatrics ITE percentile (legacy entry): "
+                             + _fmt(old["pediatrics_ite_percentile"]) + ".")
+            if not _blank(old.get("observed_encounters_completed")):
+                notes.append(f"{_entry_label(entry)}: observed encounters completed (legacy total): "
+                             + _fmt(old["observed_encounters_completed"]) + ".")
+
+
+def _milestone_fields(row: dict, ctx: _Context, entries: list[dict], target: str, notes: list[str]) -> None:
+    grouped: dict[str, list[tuple[str, str, dict]]] = defaultdict(list)
+    current = int(target[1])
+    visible = {f"{base}{suffix}_{pgy}"
+               for specialty, domains in _MILESTONE_DOMAINS.items()
+               for pgy, suffix, _ in word.get_milestone_rows_for_target(target, specialty.lower())
+               for domain, count in domains for base in [f"{domain}{i}" for i in range(1, count + 1)]}
+    for record in sorted(ctx.cumulative, key=lambda item: (item.get("date", ""), item.get("id", ""))):
+        specialty = record.get("specialty")
+        if record.get("category") != "milestones" or specialty not in _MILESTONE_DOMAINS:
+            continue
+        pgy, academic = _record_year(record, ctx, entries)
+        observed = _iso(record.get("date")) or _iso(record.get("period_end"))
+        first = _training_year_start(ctx, pgy, observed, entries)
+        half_value = _text(record.get("half") or record.get("values", {}).get("half")).casefold()
+        if half_value in {"midyear", "my", "mid-year"}:
+            half = "my"
+        elif half_value in {"year end", "end of year", "eoy", "end-of-year"}:
+            half = "eoy"
+        else:
+            half = "my" if observed < m.add_months(first, 6).isoformat() else "eoy"
+        metric = re.sub(r"[\s_-]+", "", _text(record.get("metric"))).lower()
+        metric = re.sub(r"^prof(?=\d)", "pro", metric)
+        allowed = {f"{domain}{i}" for domain, count in _MILESTONE_DOMAINS[specialty] for i in range(1, count + 1)}
+        value = record.get("value")
+        if _blank(value):
+            value = record.get("values", {}).get("assessment_status", "")
+        display = _fmt(value)
+        suffix = ("mm" if half == "my" else "my") if specialty == "Medicine" else ("pm" if half == "my" else "py")
+        field = f"{metric}{suffix}_{pgy}"
+        label = f"{specialty} PGY{pgy} {half.upper()} ({academic}), {observed}, {metric.upper()}"
+        if metric in allowed and pgy <= current:
+            grouped[field].append((display, label, record))
+        elif display:
+            notes.append(label + ": " + display)
+        if _text(record.get("text")):
+            notes.append(label + " comment: " + _text(record["text"]))
+    for field, values in grouped.items():
+        # A later dated score updates its slot. Multiple source values are
+        # retained below; the notebook still receives one scalar per milestone.
+        row[field] = values[-1][0]
+        if len(values) > 1 or field not in visible:
+            for display, label, _ in values:
+                if display:
+                    notes.append(label + ": " + display)
+
+
+def _procedure_rows(ctx: _Context, notes: list[str]) -> list[dict]:
+    grouped: dict[tuple, list[dict]] = defaultdict(list)
     for record in ctx.cumulative:
         if record.get("category") == "procedures":
-            groups[(_text(record.get("specialty")), _text(record.get("metric")), record.get("record_mode", "event"))].append(record)
-    items = sorted(groups.items(), key=lambda pair: max(r.get("date", "") for r in pair[1]), reverse=True)
-    for (specialty, name, mode), records in items:
+            grouped[(_text(record.get("specialty")), _text(record.get("metric")),
+                     record.get("record_mode", "event"))].append(record)
+    rows = []
+    for (specialty, metric, mode), records in sorted(grouped.items(),
+            key=lambda pair: max(record.get("date", "") for record in pair[1]), reverse=True):
+        duplicate_name = len({key[0] for key in grouped if key[1] == metric}) > 1
+        label = metric + (f" ({specialty})" if duplicate_name else "")
         if mode == "snapshot":
-            for record in records:
-                value = _fmt(record.get("value"))
-                label = f"{name} ({specialty}; snapshot)"
-                _row(table, [label, _date_display(record.get("date")), value], spans=[4, 3, 3], size=6)
+            for record in sorted(records, key=lambda item: item.get("date", "")):
+                period = ""
+                if record.get("period_start") and record.get("period_end"):
+                    period = f"\n{record['period_start']} to {record['period_end']}"
+                rows.append({"Procedure": label + " (source summary)" + period,
+                             "last_date_logged": _date_display(record.get("date")),
+                             "number_logged": _fmt(record.get("value"))})
         else:
-            name_specialties = {s for s, n, _ in groups if n == name}
-            label = name + (f" ({specialty})" if len(name_specialties) > 1 else "")
-            _row(table, [label, _date_display(max(r.get("date", "") for r in records)), str(len(records))],
-                 spans=[4, 3, 3], size=6)
-        notes = [_text(r.get("text")) for r in records if _text(r.get("text"))]
-        if notes:
-            _row(table, ["\n".join(notes)], spans=[10], size=6, align="left")
-    if not items:
-        _row(table, ["", "", ""], spans=[4, 3, 3], size=6)
+            rows.append({"Procedure": label,
+                         "last_date_logged": _date_display(max(record.get("date", "") for record in records)),
+                         "number_logged": str(len(records))})
+        for record in records:
+            if _text(record.get("text")):
+                notes.append(f"Procedure: {label}, {record.get('date', '')}\n{_text(record['text'])}")
+    return rows
 
 
-def _conferences(doc: Any, ctx: _Context, entries: list[dict]) -> None:
-    title = _table(doc, [TABLE_WIDTH])
-    _title(title, "CONFERENCE ATTENDANCE")
-    years = [(int(e["pgy"]), str(e.get("academic_year", ""))) for e in entries]
-    grouped: dict[tuple, dict[tuple, list[dict]]] = defaultdict(lambda: defaultdict(list))
-    for record in ctx.cumulative:
+def _conference_rows(ctx: _Context, entries: list[dict], notes: list[str]) -> list[dict]:
+    grouped: dict[tuple, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for record in sorted(ctx.cumulative, key=lambda item: (item.get("date", ""), item.get("id", ""))):
         if record.get("category") != "conferences":
             continue
-        year = _record_year(record, ctx, entries)
-        if year not in years:
-            years.append(year)
-        grouped[(_text(record.get("specialty")), _text(record.get("metric")))][year].append(record)
-    years = sorted(set(years), key=lambda y: (y[1], y[0])) or [(ctx.pgy, "")]
-    # The reference uses six grid units for category and one for each PGY.
-    table = _table(doc, [TABLE_WIDTH / (6 + len(years))] * (6 + len(years)))
-    repeated = Counter(year[0] for year in years)
-    labels = [f"PGY{pgy}" + (f"\n{academic}" if repeated[pgy] > 1 else "") for pgy, academic in years]
-    _row(table, ["CATEGORY", *labels], spans=[6] + [1] * len(years), size=6, bold=True, fill=HEADER_GRAY, repeat=True)
-    for (specialty, metric), periods in sorted(grouped.items()):
-        cells = []
-        for year in years:
-            values = []
-            for record in sorted(periods.get(year, []), key=lambda r: (r.get("period_start", ""), r.get("date", ""))):
-                unit = _text(record.get("unit"))
-                percentage = unit.casefold() in {"%", "percent", "percentage"}
-                value = _fmt(record.get("value"), decimals=2 if percentage else None)
-                if _number(record.get("value")) is not None and percentage:
-                    value += "%"
-                elif value and unit:
-                    value += " " + unit
-                elif not value:
-                    value = _text(record.get("values", {}).get("status"))
-                source_start, source_end = _iso(record.get("period_start")), _iso(record.get("period_end"))
-                annual_entry = next((entry for entry in entries
-                                     if (entry.get("pgy"), entry.get("academic_year")) == year), None)
-                complete_year = bool(annual_entry and source_start == _iso(annual_entry.get("period_start"))
-                                     and source_end == _iso(annual_entry.get("period_end"))
-                                     and source_end == (m.add_months(date.fromisoformat(source_start), 12) - timedelta(days=1)).isoformat())
-                if source_start and source_end and not complete_year:
-                    value += f"\n{source_start} to {source_end}"
-                elif not source_start and not source_end and _iso(record.get("date")):
-                    value += f"\nAs of {record['date']}"
-                values.append(value)
-            cells.append("\n\n".join(values))
-        label = f"{specialty} :: {metric}" if specialty else metric
-        _row(table, [label, *cells], spans=[6] + [1] * len(years), size=6)
-    if not grouped:
-        _row(table, [""] * (1 + len(years)), spans=[6] + [1] * len(years), size=6)
-
-
-def _duty_hours(doc: Any, ctx: _Context) -> None:
-    table = _table(doc, MAIN_WIDTHS)
-    _title(table, "DUTY HOURS SUMMARY")
-    _row(table, ["Review Period", "Rotation", "Violation", "Committee Notes / Resolution"], bold=True, fill=GRAY, repeat=True)
-    violations = [r for r in ctx.evidence if r.get("category") == "duty_violations"]
-    for record in sorted(violations, key=lambda r: r.get("date", "")):
-        values = record.get("values", {})
-        note_parts = [_text(record.get("text"))]
-        for key in ("description", "comments"):
-            value = _text(values.get(key))
-            if value and not any(value in part for part in note_parts):
-                note_parts.append(value)
-        manual = _text(ctx.fields.get("duty_resolution_notes"))
-        if manual:
-            note_parts.append("Committee: " + manual)
-        _row(table, [_review_label(ctx.narrative_review, ctx.pgy) + "\n" + _date_display(record.get("date")),
-                     record.get("rotation", values.get("training_location", "")),
-                     record.get("metric", values.get("rule", "")), "\n".join(p for p in note_parts if p)], size=6)
-    if not violations:
-        _row(table, ["", "", "", ctx.fields.get("duty_resolution_notes", "")], size=6)
-    deep = _table(doc, [1.7, 2.95, 2.95])
-    _title(deep, "DUTY HOUR DEEP DIVE")
-    latest = max((r.get("date", "") for r in ctx.evidence if r.get("category") == "duty_hours"), default="")
-    row = _row(deep, ["LAST DUTY HOUR LOG:", ctx.fields.get("duty_last_log", latest)], spans=[1, 2], size=6)
-    _cell(row.cells[0], "LAST DUTY HOUR LOG:", size=6, bold=True, fill=GRAY)
-    _row(deep, ["MINIMUM DAYS OFF", "DAY OFF WINDOW", "ROTATIONS"], size=6, bold=True, fill="000000", color="FFFFFF")
-    _row(deep, [ctx.fields.get(key, "") for key in ("duty_min_days_off", "duty_days_off_window", "duty_days_off_rotations")], size=6)
-    _row(deep, ["MAX HOURS IN 4 WEEK PERIOD", "80 HOUR WINDOW", "ROTATIONS"], size=6, bold=True, fill="000000", color="FFFFFF")
-    _row(deep, [ctx.fields.get(key, "") for key in ("duty_max_hours_4weeks", "duty_80_hour_window", "duty_80_hour_rotations")], size=6)
-
-
-def _milestone_groups(ctx: _Context, specialty: str, entries: list[dict]) -> list[dict]:
-    groups: dict[tuple, dict] = {}
-    for record in ctx.cumulative:
-        if record.get("category") != "milestones" or record.get("specialty") != specialty:
-            continue
-        key = (record.get("date", ""), record.get("period_start", ""), record.get("period_end", ""), record.get("form", ""))
-        if key not in groups:
-            pgy, academic = _record_year(record, ctx, entries)
-            entry = next((e for e in entries if e.get("pgy") == pgy and e.get("academic_year") == academic), None)
-            first = _iso((entry or {}).get("period_start"))
-            if not first:
-                first = m.add_months(date.fromisoformat(ctx.resident["start_date"]), 12 * (pgy - 1)).isoformat()
-            midpoint = m.add_months(date.fromisoformat(first), 6).isoformat()
-            half = "MY" if key[0] <= midpoint else "EOY"
-            groups[key] = {"label": f"PGY{pgy} {half}", "date": key[0], "academic_year": academic,
-                           "form": key[3], "scores": defaultdict(list), "notes": []}
-        metric = re.sub(r"\s+", "", _text(record.get("metric"))).upper()
-        metric = re.sub(r"^PROF(?=\d)", "PRO", metric)
-        status = record.get("values", {}).get("assessment_status", "")
-        value = record.get("value") if not _blank(record.get("value")) else status
-        groups[key]["scores"][metric].append(value)
+        pgy, academic = _record_year(record, ctx, entries)
+        unit = _text(record.get("unit"))
+        percentage = unit.casefold() in {"%", "percent", "percentage"}
+        value = _fmt(record.get("value"), decimals=2 if percentage else None)
+        if value and _number(record.get("value")) is not None and percentage:
+            value += "%"
+        elif value and unit:
+            value += " " + unit
+        elif not value:
+            value = _text(record.get("values", {}).get("status"))
+        first, last = _iso(record.get("period_start")), _iso(record.get("period_end"))
+        if first and last:
+            value += f"\n{first} to {last}"
+        elif record.get("date"):
+            value += f"\nAs of {record['date']}"
+        specialty, metric = _text(record.get("specialty")), _text(record.get("metric"))
+        if pgy <= ctx.pgy:
+            grouped[(specialty, metric)][pgy].append(value)
+        else:
+            notes.append(f"Conference attendance: {specialty}, {metric}, PGY{pgy} ({academic})\n{value}")
         if _text(record.get("text")):
-            groups[key]["notes"].append(f"{metric}: {_text(record['text'])}")
-    output = [groups[key] for key in sorted(groups)]
-    labels = Counter(g["label"] for g in output)
-    for group in output:
-        if labels[group["label"]] > 1:
-            group["label"] += "\n" + group["date"]
-    return output
+            notes.append(f"Conference attendance: {specialty}, {metric}\n{_text(record['text'])}")
+    return [{"Category": f"{specialty} :: {metric}" if specialty else metric,
+             **{f"PGY{pgy}": "\n\n".join(values) for pgy, values in years.items()}}
+            for (specialty, metric), years in sorted(grouped.items())]
 
 
-def _milestones(doc: Any, ctx: _Context, specialty: str, entries: list[dict]) -> None:
-    domains = MILESTONE_DOMAINS[specialty]
-    codes = [f"{domain}{number}" for domain, count in domains for number in range(1, count + 1)]
-    groups = _milestone_groups(ctx, specialty, entries)
-    # Unrecognized imported codes remain visible in additional columns.
-    extra_codes = sorted({code for group in groups for code in group["scores"]} - set(codes))
-    codes += extra_codes
-    if extra_codes:
-        domains = [*domains, ("OTHER", len(extra_codes))]
-    table = _table(doc, [0.6] + [(TABLE_WIDTH - 0.6) / len(codes)] * len(codes))
-    title = "MEDICINE" if specialty == "Medicine" else "PEDIATRIC"
-    _title(table, f"{title} MILESTONES")
-    _row(table, [""] + [domain for domain, _ in domains], spans=[1] + [count for _, count in domains],
-         size=6, bold=True, fill=GRAY, repeat=True)
-    number_values = [""] + [str(number) for domain, count in MILESTONE_DOMAINS[specialty] for number in range(1, count + 1)] + extra_codes
-    row = _row(table, number_values, size=6, bold=True, fill="000000", color="FFFFFF", repeat=True)
-    _cell(row.cells[0], "", size=6, fill="FFFFFF")
-    for group in groups:
-        values = ["\n".join(_fmt(v, decimals=2) if _number(v) is not None else _text(v)
-                             for v in group["scores"].get(code, [])) for code in codes]
-        _row(table, [group["label"], *values], size=6, bold=True)
-        if group["notes"]:
-            _row(table, ["\n".join(group["notes"])], spans=[1 + len(codes)], size=6, align="left")
-    if not groups:
-        _row(table, [""] * (1 + len(codes)), size=6)
-
-    period_count = max(1, len(groups))
-    trend = _table(doc, [0.75] + [4.65 / period_count] * period_count + [0.65, 1.55])
-    _title(trend, f"{title} MILESTONE TREND SUMMARY")
-    _row(trend, ["Domain", *([g["label"] for g in groups] or [""]), "Change", "Trend"],
-         size=6, bold=True, fill=GRAY, repeat=True)
-    for domain, count in MILESTONE_DOMAINS[specialty]:
-        means = []
-        for group in groups:
-            scores = []
-            conflict = False
-            for number in range(1, count + 1):
-                values = group["scores"].get(f"{domain}{number}", [])
-                numeric = [_number(value) for value in values]
-                numeric = [value for value in numeric if value is not None]
-                # Conflicting scores are shown above; do not silently average revisions.
-                if len(set(numeric)) > 1:
-                    conflict = True
-                elif numeric:
-                    scores.append(numeric[0])
-            means.append(None if conflict or not scores else sum(scores) / len(scores))
-        present = [score for score in means if score is not None]
-        change = present[-1] - present[0] if len(present) >= 2 else None
-        change_label = "" if change is None else f"{change:+.2f}"
-        direction = "" if change is None else ("Increase" if change > 0.00001 else "Decrease" if change < -0.00001 else "No change")
-        manual = ctx.fields.get(f"{specialty.lower()}_milestone_trend_{domain.lower()}", "")
-        display = manual or direction
-        _row(trend, [domain, *([_fmt(value, decimals=2) for value in means] or [""]), change_label, display],
-             size=6, bold=True)
-
-
-def _readiness(doc: Any, ctx: _Context) -> None:
-    table = _table(doc, [2.2, 5.4])
-    _title(table, "PRACTICE READINESS AND DEVELOPMENT SNAPSHOT")
-    for label, key in READINESS_FIELDS.items():
-        row = _row(table, [label, ctx.fields.get(key, "")])
-        _cell(row.cells[0], label, bold=True, fill=GRAY)
-
-
-def _encounters(doc: Any, entries: list[dict]) -> None:
-    entries = entries or [{"pgy": 1, "fields": {}}]
-    # The four ordinary training years remain columns, with extra columns only
-    # for a repeated PGY so an earlier year is never overwritten.
-    columns = list(entries)
-    present = {e.get("pgy") for e in columns}
-    columns.extend({"pgy": pgy, "fields": {}} for pgy in range(1, 5) if pgy not in present)
-    columns.sort(key=lambda e: (e.get("pgy", 0), e.get("academic_year", "")))
-    table = _table(doc, [1.5] + [6.1 / len(columns)] * len(columns))
-    _title(table, "OBSERVED ENCOUNTERS COMPLETION")
-    _row(table, ["NUMBER", *[_year_label(entry, columns) for entry in columns]], bold=True, fill=GRAY, repeat=True)
-    logged = [number for number in range(1, 5)
-              if any(entry.get("fields", {}).get(f"observed_encounter_{number}") is not None for entry in columns)]
-    for number in logged or [1]:
-        values = []
-        for entry in columns:
-            value = entry.get("fields", {}).get(f"observed_encounter_{number}")
-            values.append("X" if value is True else "Not completed" if value is False else "")
-        _row(table, [str(number), *values], bold=True)
-    legacy = [entry for entry in columns if _text(entry.get("fields", {}).get("observed_encounters_completed"))]
-    if legacy:
-        note = "\n".join(f"{_year_label(entry, columns)} recorded total: {entry['fields']['observed_encounters_completed']}"
-                         for entry in legacy)
-        _row(table, [note], spans=[1 + len(columns)], align="left")
-
-
-def _ite_value(fields: dict, specialty: str) -> str:
-    if specialty == "Medicine":
-        score = _fmt(fields.get("medicine_ite_score"))
-        percentile = _fmt(fields.get("medicine_ite_percentile"))
-        return score + (f" ({percentile}%tile)" if percentile else "")
-    score = _fmt(fields.get("pediatrics_ite_score"))
-    expected = _fmt(fields.get("pediatrics_ite_expected_pass_rate"))
-    old_percentile = _fmt(fields.get("pediatrics_ite_percentile"))
-    if expected:
-        score += f" ({expected}%_PR)"
-    if old_percentile:
-        score += f" ({old_percentile}%tile)"
-    return score
-
-
-def _ite(doc: Any, entries: list[dict]) -> None:
-    table = _table(doc, [0.55, 3.525, 3.525])
-    _title(table, "IN-TRAINING EXAM SCORES")
-    _row(table, ["", "MED IN-TRAINING EXAM SCORE:", "PED IN-TRAINING EXAM SCORE:"], bold=True, fill=GRAY, repeat=True)
-    rows = [(entry, _ite_value(entry.get("fields", {}), "Medicine"), _ite_value(entry.get("fields", {}), "Pediatrics"))
-            for entry in entries]
-    rows = [row for row in rows if row[1] or row[2]]
-    for entry, med, ped in rows:
-        _row(table, [_year_label(entry, entries), med, ped], bold=True)
-    if not rows:
-        _row(table, ["PGY1", "", ""], bold=True)
-
-
-def _history_values(ctx: _Context, field: str) -> list[str]:
-    return [_text(review.get("fields", {}).get(field)) for review in ctx.history
-            if _text(review.get("fields", {}).get(field))]
-
-
-def _scholarship(doc: Any, ctx: _Context) -> None:
-    table = _table(doc, [TABLE_WIDTH])
-    _title(table, "SCHOLARLY ACTIVITIES")
-    for label, key in (("ABSTRACT SUBMISSIONS/ACCEPTANCES", "abstracts"), ("PUBLICATIONS", "publications")):
-        _row(table, [label], bold=True, fill=GRAY)
-        for value in _history_values(ctx, key) or [""]:
-            _row(table, [value], bold=True)
-    advocacy = _table(doc, [TABLE_WIDTH])
-    _title(advocacy, "ADVOCACY")
-    for value in _history_values(ctx, "advocacy") or [""]:
-        _row(advocacy, [value], bold=True, align="left")
-
-
-def _narratives(doc: Any, ctx: _Context) -> None:
-    fields = ctx.fields
-    _single(doc, "360 EVALUATION FROM NURSING", fields.get("nursing_feedback", ""))
-    overall = _text(fields.get("overall_impression"))
-    if _text(fields.get("strengths")):
-        overall += ("\n\n" if overall else "") + "Strengths\n" + _text(fields["strengths"])
-    _single(doc, "OVERALL IMPRESSION", overall, fill=GREEN)
-    _single(doc, "AREAS FOR GROWTH", fields.get("areas_for_growth", ""), fill=RED)
-    _single(doc, "PATTERNS OVER TIME", fields.get("patterns_over_time", ""))
-    committee = [_text(fields.get("ccc_summary"))]
-    for key, label in (("ccc_decision", "CCC assessment or decision"), ("action_plan", "Action plan"),
-                       ("mentor", "Mentor or responsible person"), ("follow_up_date", "Follow-up"),
-                       ("next_review_date", "Next review"), ("resident_comments", "Resident comments"),
-                       ("observed_encounters_notes", "Observed encounter notes")):
-        if _text(fields.get(key)):
-            committee.append(label + "\n" + _text(fields[key]))
-    _single(doc, "MEDICINE PEDIATRICS CLINICAL COMPETENCY COMMITTEE REVIEW", "\n\n".join(value for value in committee if value))
-    header = _table(doc, [TABLE_WIDTH])
-    _title(header, "SIGNATURES")
-    signature = _table(doc, [2.6, 2.6, 2.4])
-    for role in ("Resident", "Program Director"):
-        row = _row(signature, [f"{role} Signature:", "_____________________________________________",
-                               "Date: ____________________________________"], height=0.3, align="left")
-        for i in (0, 2):
-            _cell(row.cells[i], row.cells[i].text, bold=True, align="left")
-
-
-def _evaluations(doc: Any, records: list[dict], title: str, *, fill: str = BLUE) -> None:
-    _page_break(doc)
-    table = _table(doc, [TABLE_WIDTH / 10] * 10)
-    _title(table, title, fill=fill, size=6)
-    rows = evaluation_rows(records)
-    for entry in rows:
-        metadata = _row(table, [_date_display(entry.get("date")), entry.get("rotation", ""),
-                               entry.get("evaluator", "")], spans=[2, 2, 6], size=6, keep=True)
-        _cell(metadata.cells[0], _date_display(entry.get("date")), size=6, align="left")
-        narrative = _text(entry.get("narrative"))
-        if narrative:
-            # Long narrative rows are deliberately allowed to continue across
-            # pages. No fixed heights or comment limits can truncate evidence.
-            for cell in {id(cell._tc): cell for cell in metadata.cells}.values():
-                cell.paragraphs[0].paragraph_format.keep_with_next = True
-            _row(table, [narrative], spans=[10], size=6, align="left")
-    if not rows:
-        _row(table, [""], spans=[10], size=6, align="left")
-
-
-def _apply_pagination(doc: Any) -> None:
-    """Keep section headings attached without fixing the height of narratives."""
-    for table_index, table in enumerate(doc.tables):
-        for row in table.rows:
-            repeated = bool(row._tr.xpath("./w:trPr/w:tblHeader"))
-            if repeated:
-                for cell in {id(c._tc): c for c in row.cells}.values():
-                    for paragraph in cell.paragraphs:
-                        paragraph.paragraph_format.keep_with_next = True
-        if table_index == 0:
-            # This is the report title, not a continuation column heading.
-            # Suppress an extra title when an office renderer joins adjacent
-            # tables for pagination, while keeping the first data row with it.
-            for element in table.rows[0]._tr.xpath("./w:trPr/w:tblHeader"):
-                element.getparent().remove(element)
-        if table.cell(0, 0).text not in {"MEDICINE MILESTONES", "PEDIATRIC MILESTONES"}:
+def _duty_fields(row: dict, ctx: _Context, target: str, notes: list[str]) -> None:
+    shifts = [record for record in ctx.evidence if record.get("category") == "duty_hours"]
+    calculated = duty_deep_dive(shifts)
+    if calculated:
+        notes.append(DUTY_SOURCE_METHOD_NOTE)
+    for key, value in calculated.items():
+        if key == "calculation_note":
+            if value:
+                notes.append(_text(value))
+        else:
+            row[f"{key}_{target}"] = _fmt(value)
+    for modern, legacy in _DUTY_MAP.items():
+        if not _blank(ctx.fields.get(modern)):
+            row[f"{legacy}_{target}"] = _fmt(ctx.fields[modern])
+    manual = _text(ctx.fields.get("duty_resolution_notes"))
+    if manual:
+        row[f"dh_comments_{target}"] = manual
+    rows = []
+    for record in sorted(ctx.evidence, key=lambda item: (item.get("date", ""), item.get("id", ""))):
+        if record.get("category") != "duty_violations":
             continue
-        # A usual MY/EOY matrix has only a few rows. Keep that short table
-        # intact, while allowing a longer longitudinal record to paginate.
-        text_size = sum(len(c.text) for row in table.rows for c in {id(cell._tc): cell for cell in row.cells}.values())
-        if len(table.rows) <= 10 and text_size < 4000:
-            for row in table.rows[:-1]:
-                for cell in {id(c._tc): c for c in row.cells}.values():
-                    for paragraph in cell.paragraphs:
-                        paragraph.paragraph_format.keep_with_next = True
+        values = record.get("values") if isinstance(record.get("values"), dict) else {}
+        detail = _join_distinct([record.get("text"), values.get("description"), values.get("comments")])
+        if values.get("work_type"):
+            detail += ("\n" if detail else "") + "Work type: " + _text(values["work_type"])
+        if not _blank(record.get("value")):
+            detail += ("\n" if detail else "") + "Source value: " + _fmt(record["value"])
+            if record.get("unit"):
+                detail += " " + _text(record["unit"])
+        if manual:
+            detail += ("\n\n" if detail else "") + "Committee: " + manual
+        rows.append({"review_period": f"PGY{ctx.pgy} {'MY' if target.endswith('my') else 'EOY'}\n"
+                     + (_iso(record.get("date")) or ""),
+                     "rotation": _text(record.get("rotation") or values.get("training_location")),
+                     "violation": _text(record.get("metric") or values.get("rule")), "notes": detail})
+    row["duty_summary_rows"] = json.dumps(rows, ensure_ascii=False)
+    # Summary rows do not have the shifts needed by the original rolling-window
+    # calculation. Keep their supplied values visible as source summaries.
+    for record in shifts:
+        values = record.get("values") if isinstance(record.get("values"), dict) else {}
+        if record.get("record_mode") == "snapshot":
+            summary = _fmt(record.get("value"))
+            if record.get("unit"):
+                summary += " " + _text(record["unit"])
+            notes.append(f"Duty-hour source summary: {record.get('date', '')}, {record.get('metric', '')}\n{summary}")
+        if _text(record.get("text")):
+            notes.append(f"Duty-hour log: {record.get('date', '')}\n{_text(record['text'])}")
+
+
+def _prepare_row(ctx: _Context) -> pd.Series:
+    entries = _year_entries(ctx)
+    target = _target(ctx, entries)
+    row: dict[str, str] = {}
+    history = _eligible_history(ctx)
+    # Already supplied legacy scalar fields can be used without reformatting.
+    # Metadata fields are always overwritten from the selected resident/review.
+    sources = [ctx.resident, *[review.get("fields", {}) for review in history]]
+    for source in sources:
+        if isinstance(source, dict):
+            for key, value in source.items():
+                if _LEGACY_FIELD.fullmatch(str(key)) and not isinstance(value, (dict, list)):
+                    row[key] = _scalar(value)
+    for pgy in range(1, 5):
+        for half in ("my", "eoy"):
+            row[f"review_period_r{pgy}{half}"] = ""
+    row.update(subject_name=_text(ctx.resident.get("name")),
+               coach_name=_text(ctx.fields.get("coach_name") or ctx.resident.get("coach_name")),
+               graduation_date=_text(ctx.resident.get("graduation_date")))
+    row[f"subject_status_{target}"] = f"R{ctx.pgy}"
+    row[f"review_period_{target}"] = f"{ctx.period_start} to {ctx.period_end}"
+    row[f"ccc_meeting_date_{target}"] = _text((ctx.narrative_review or {}).get("review_date"))
+    rotations = _text(ctx.fields.get("rotation_summary"))
+    if not rotations:
+        rotations = _join_distinct((record.get("rotation") for record in ctx.evidence), "; ")
+    row[f"rotations_{target}"] = rotations
+    notes: list[str] = []
+    if ctx.limited_final_history:
+        notes.append("Historical data limited to this saved review. The finalized review has no separate cumulative snapshot.")
+    _annual_fields(row, ctx, entries, target, notes)
+    _milestone_fields(row, ctx, entries, target, notes)
+    procedure_rows = _procedure_rows(ctx, notes)
+    if procedure_rows:
+        row["procedures"] = procedures_html(procedure_rows)
+    conference_rows = _conference_rows(ctx, entries, notes)
+    if conference_rows:
+        row[f"conferences_r{ctx.pgy}"] = conferences_html(conference_rows, ctx.pgy)
+    _duty_fields(row, ctx, target, notes)
+
+    # Cumulative source fields retain separate checkpoint entries in the
+    # notebook's own scholarship and advocacy tables, including repeated PGYs.
+    allowed_targets = set(word.get_cumulative_targets(target))
+    grouped: dict[tuple, list[str]] = defaultdict(list)
+    for review in history:
+        checkpoint = _review_target(review)
+        if checkpoint is None:
+            continue
+        for modern, legacy in (("abstracts", "abstract"), ("publications", "publications"), ("advocacy", "advocacy")):
+            value = _text(review.get("fields", {}).get(modern))
+            if value:
+                destination = checkpoint if checkpoint in allowed_targets else target
+                grouped[(legacy, destination)].append(value)
+    for (legacy, checkpoint), values in grouped.items():
+        row[f"{legacy}_{checkpoint}"] = _join_distinct(values)
+    for modern, legacy in _NARRATIVE_MAP.items():
+        if modern in ctx.fields:
+            row[f"{legacy}_{target}"] = _paragraphs([ctx.fields[modern]])
+    if _text(ctx.fields.get("strengths")):
+        current = row.get(f"overall_imp_{target}", "")
+        row[f"overall_imp_{target}"] = current + _paragraphs(["Strengths: " + _text(ctx.fields["strengths"])])
+
+    direct = {"coach_name", "rotation_summary", "strengths", "abstracts", "publications", "advocacy",
+              "ccc_summary", "duty_resolution_notes", *_NARRATIVE_MAP, *_DUTY_MAP, *_ANNUAL_MAP,
+              "adult_clinic_count", "pediatric_clinic_count", "pediatrics_ite_percentile",
+              "observed_encounters_completed", *[f"observed_encounter_{i}" for i in range(1, 5)],
+              "usmle_step1", "usmle_step2ck", "usmle_step3"}
+    committee = [_text(ctx.fields.get("ccc_summary"))]
+    labels = {**m.REVIEW_TEXT_FIELDS, **m.REVIEW_VALUE_FIELDS, **ANNUAL_LABELS}
+    for key, value in ctx.fields.items():
+        if key in direct or _LEGACY_FIELD.fullmatch(str(key)) or _blank(value):
+            continue
+        label = labels.get(key, str(key).replace("_", " ").capitalize())
+        committee.append(f"{label}\n{_text(value)}")
+    for review in history:
+        for modern, legacy in (("usmle_step1", "step1"), ("usmle_step2ck", "step2ck"), ("usmle_step3", "step3")):
+            fields = review.get("fields", {})
+            if modern in fields:
+                row[legacy] = _fmt(fields[modern])
+    committee.extend(notes)
+    if any(committee):
+        row[f"ccc_concerns_{target}"] = row.get(f"ccc_concerns_{target}", "") + _paragraphs(committee)
+
+    for specialty, legacy, title, color in (
+        ("Medicine", "mp5", "MEDICINE EVALUATION SUMMARY", "#D9EAF7"),
+        ("Pediatrics", "mp3", "PEDIATRIC EVALUATION SUMMARY", "#BFEDD2"),
+    ):
+        records = [record for record in ctx.evidence
+                   if record.get("category") == "evaluations" and record.get("specialty") == specialty]
+        if records:
+            row[f"{legacy}_{target}"] = evaluations_html(records, title, color)
+    # The original renderer calls pd.notna on each field, so every value must
+    # remain a scalar string. "0" is recorded data; "" is genuinely missing.
+    return pd.Series({key: _scalar(value) for key, value in row.items()}, dtype=object)
+
+
+def prepare_notebook_row(
+    resident: dict,
+    records: list[dict],
+    reviews: list[dict],
+    *,
+    period_start: str,
+    period_end: str,
+    review: dict | None = None,
+    tracking: list[dict] | None = None,
+) -> pd.Series:
+    """Return the exact old REDCap-style row expected by the user's notebook."""
+    ctx = _context(resident, records, reviews, period_start, period_end, review, tracking)
+    return _prepare_row(ctx)
 
 
 def build_ccc_summary(
@@ -763,41 +673,403 @@ def build_ccc_summary(
     program_name: str = "Medicine Pediatrics Residency",
     tracking: list[dict] | None = None,
 ) -> bytes:
-    """Return an ordinary editable DOCX matching the supplied CCC Summary.
+    """Build an ordinary editable DOCX using the actual Jupyter Word functions.
 
-    ``review=None`` means live evidence for the requested dates. The most recent
-    saved review through the cutoff supplies narrative fields only. An explicit
-    Final review always uses its saved dates, resident profile, current-period
-    snapshot, and (when available) cumulative/annual snapshots. Missing fields
-    remain blank; missing frozen evidence is never filled from live records.
+    The original formatting, table order, numerical descriptions, name cleanup,
+    and Medicine/Pediatrics page breaks are retained. Recorded USMLE scores use
+    the notebook's existing optional table. Additional combined evaluations and
+    self-assessments use its same evaluation layout after the original report.
     """
     ctx = _context(resident, records, reviews, period_start, period_end, review, tracking)
-    doc = _new_document()
-    doc.core_properties.subject = _text(program_name) + " Clinical Competency Committee Summary"
-    entries = _year_entries(ctx)
-    _identity(doc, ctx)
-    _clinic(doc, entries)
-    _procedures(doc, ctx)
-    _conferences(doc, ctx, entries)
-    _duty_hours(doc, ctx)
-    _milestones(doc, ctx, "Medicine", entries)
-    _milestones(doc, ctx, "Pediatrics", entries)
-    _readiness(doc, ctx)
-    _encounters(doc, entries)
-    _ite(doc, entries)
-    _scholarship(doc, ctx)
-    _narratives(doc, ctx)
-    _evaluations(doc, [r for r in ctx.evidence if r.get("category") == "evaluations" and r.get("specialty") == "Medicine"],
-                 "MEDICINE EVALUATION SUMMARY")
-    _evaluations(doc, [r for r in ctx.evidence if r.get("category") == "evaluations" and r.get("specialty") == "Pediatrics"],
-                 "PEDIATRIC EVALUATION SUMMARY", fill=GREEN)
-    combined = [r for r in ctx.evidence if r.get("category") == "evaluations" and r.get("specialty") == "Combined"]
-    if combined:
-        _evaluations(doc, combined, "COMBINED EVALUATION SUMMARY")
-    self_assessments = [r for r in ctx.evidence if r.get("category") == "self_assessments"]
-    if self_assessments:
-        _evaluations(doc, self_assessments, "RESIDENT SELF-ASSESSMENT")
-    _apply_pagination(doc)
+    row = _prepare_row(ctx)
+    doc = word.create_doc(row, 0)
+    if doc is None:
+        raise m.ValidationError("Choose a valid review checkpoint before preparing the CCC summary.")
+    if any(word.has_value(row, key) for key in ("step1", "step2ck", "step3")):
+        # The call is commented out in the source notebook. When scores were
+        # entered, use that existing helper in its original intended position.
+        scholarly = next((table for table in doc.tables if table.cell(0, 0).text == "SCHOLARLY ACTIVITIES"), None)
+        word.add_usmle_scores_table(doc, row)
+        if scholarly is not None:
+            scholarly._tbl.addprevious(doc.tables[-1]._tbl)
+    for title, records in (
+        ("COMBINED EVALUATION SUMMARY", [record for record in ctx.evidence
+                                       if record.get("category") == "evaluations" and record.get("specialty") == "Combined"]),
+        ("RESIDENT SELF-ASSESSMENT", [record for record in ctx.evidence if record.get("category") == "self_assessments"]),
+    ):
+        if records:
+            word.add_page_break(doc)
+            source = evaluations_html(records, title, "#D9EAF7")
+            word.add_html_table_to_doc(doc, word.clean_eval_html_keep_formatting(source, row["subject_name"]), table_width=7.6)
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
+
+
+
+
+# Original HTML builders from the supplied processing notebooks.
+# Inlined so this update requires no additional deployed helper module.
+
+def make_procedure_html(group):
+    rows = []
+
+    # Header row
+    rows.append(
+        '<tr style="height:24.8611px;">'
+        '<td style="background-color:#ecf0f1;text-align:center;" colspan="4">PROCEDURE</td>'
+        '<td style="background-color:#ecf0f1;text-align:center;" colspan="3">LAST DATE LOGGED</td>'
+        '<td style="background-color:#ecf0f1;text-align:center;" colspan="3">NUMBER LOGGED</td>'
+        '</tr>'
+    )
+
+    # Data rows
+    for _, row in group.iterrows():
+        procedure = html.escape(str(row["Procedure"]))
+        last_date = html.escape(str(row["last_date_logged"]))
+        number_logged = html.escape(str(row["number_logged"]))
+
+        rows.append(
+            '<tr>'
+            f'<td style="background-color:#ffffff;text-align:center;" colspan="4">{procedure}</td>'
+            f'<td style="background-color:#ffffff;text-align:center;" colspan="3">{last_date}</td>'
+            f'<td style="background-color:#ffffff;text-align:center;" colspan="3">{number_logged}</td>'
+            '</tr>'
+        )
+
+    table = (
+        '<table style="border-collapse:collapse;width:100%;height:24.8611px;" border="1">'
+        '<colgroup>'
+        '<col style="width:10.0369%;"><col style="width:10.0369%;"><col style="width:10.0369%;">'
+        '<col style="width:10.0369%;"><col style="width:10.0369%;"><col style="width:10.0369%;">'
+        '<col style="width:10.0369%;"><col style="width:10.0369%;"><col style="width:10.0369%;">'
+        '<col style="width:9.66814%;">'
+        '</colgroup>'
+        '<tbody>'
+        + "".join(rows) +
+        '</tbody></table><p>&nbsp;</p>'
+    )
+
+    return table
+
+
+def make_conference_table(group, max_pgy):
+    pgy_cols = [f"PGY{i}" for i in range(1, max_pgy + 1)]
+
+    # Always keep PGY1-PGY4 structure for REDCap/table consistency
+    display_pgy_cols = ["PGY1", "PGY2", "PGY3", "PGY4"]
+
+    group = group.copy().fillna("")
+
+    colgroup = (
+        '<colgroup>'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 10.0369%;">'
+        '<col style="width: 9.66814%;">'
+        '</colgroup>'
+    )
+
+    html = (
+        '<table style="border-collapse: collapse; width: 100%;" border="1">'
+        f'{colgroup} '
+        '<tbody>'
+        '<tr>'
+        '<td style="text-align: center; background-color: #ecf0f1;" colspan="6">CATEGORY</td>'
+        '<td style="text-align: center; background-color: #ecf0f1;">PGY1</td>'
+        '<td style="text-align: center; background-color: #ecf0f1;">PGY2</td>'
+        '<td style="text-align: center; background-color: #ecf0f1;">PGY3</td>'
+        '<td style="text-align: center; background-color: #ecf0f1;">PGY4</td>'
+        '</tr>'
+    )
+
+    for _, r in group.iterrows():
+        category = r.get("Category", "") or "&nbsp;"
+
+        html += (
+            '<tr>'
+            f'<td style="text-align: center; background-color: #ffffff;" colspan="6">{category}</td>'
+        )
+
+        for col in display_pgy_cols:
+            value = r.get(col, "")
+
+            # Hide PGYs above current level
+            if col not in pgy_cols:
+                value = ""
+
+            if value == "":
+                value = "&nbsp;"
+
+            html += (
+                f'<td style="text-align: center; background-color: #ffffff;">{value}</td>'
+            )
+
+        html += '</tr>'
+
+    html += '</tbody></table> <p>&nbsp;</p>'
+
+    return html
+
+
+def clean_html_text(value):
+    value = str(value).strip()
+    if value.lower() in ["nan", "na", "n/a", "none"]:
+        return ""
+    value = html.escape(value)
+    value = value.replace("\n", "<br>")
+    return value
+
+
+def build_eval_html(eval_rows, title, header_color):
+    """
+    Creates a REDCap-ready HTML table.
+    Only includes evaluations with at least one useful value.
+    """
+
+    usable_rows = []
+
+    for r in eval_rows:
+        date = str(r.get("date", "")).strip()
+        rotation = str(r.get("rotation", "")).strip()
+        evaluator = str(r.get("evaluator", "")).strip()
+        comments = str(r.get("comments", "")).strip()
+
+        if date or rotation or evaluator or comments:
+            usable_rows.append({
+                "date": date,
+                "rotation": rotation,
+                "evaluator": evaluator,
+                "comments": comments,
+            })
+
+    if not usable_rows:
+        return ""
+
+    html_parts = []
+
+    html_parts.append(
+        '<table style="border-collapse: collapse; width: 100%;" border="1">'
+    )
+    html_parts.append(
+        '<colgroup>'
+        '<col style="width: 10.3877%;">'
+        '<col style="width: 4.34542%;">'
+        '<col style="width: 16.6893%;">'
+        '<col style="width: 8.47936%;">'
+        '<col style="width: 17.8902%;">'
+        '<col style="width: 8.43152%;">'
+        '<col style="width: 8.43152%;">'
+        '<col style="width: 8.43152%;">'
+        '<col style="width: 8.43152%;">'
+        '<col style="width: 8.48187%;">'
+        '</colgroup>'
+    )
+    html_parts.append("<tbody>")
+
+    html_parts.append(
+        f'<tr style="height: 25px;">'
+        f'<td style="text-align: center; background-color: {header_color};" colspan="10">'
+        f'{title}'
+        f'</td>'
+        f'</tr>'
+    )
+
+    for r in usable_rows:
+        date = clean_html_text(r["date"])
+        rotation = clean_html_text(r["rotation"])
+        evaluator = clean_html_text(r["evaluator"])
+        comments = clean_html_text(r["comments"])
+
+        html_parts.append(
+            '<tr style="height: 25px;">'
+            f'<td style="background-color: #ffffff; text-align: left;" colspan="2">{date}</td>'
+            f'<td style="background-color: #ffffff; text-align: center;" colspan="2">'
+            f'<span style="color: #e03e2d;">{rotation}</span>'
+            f'</td>'
+            f'<td style="background-color: #ffffff; text-align: center;" colspan="6">{evaluator}</td>'
+            f'</tr>'
+        )
+
+        if comments:
+            html_parts.append(
+                '<tr style="height: 25px;">'
+                f'<td style="background-color: #ffffff; text-align: left;" colspan="10">'
+                f'{comments}'
+                f'</td>'
+                f'</tr>'
+            )
+
+    html_parts.append("</tbody></table>")
+
+    return "".join(html_parts)
+
+
+def _display(value: Any) -> str:
+    """Keep prepared scalar text, including zero, while blanking missing values."""
+    if value is None or (pd.api.types.is_scalar(value) and pd.isna(value)):
+        return ""
+    return str(value)
+
+
+def procedures_html(summary_rows: Iterable[Mapping[str, Any]]) -> str:
+    """Render prepared procedure summaries with the notebook's 4/3/3 columns.
+
+    Each row supplies ``Procedure``, ``last_date_logged``, and ``number_logged``.
+    Date labels, units, and counts are passed through as supplied by the caller.
+    Empty source data leave the legacy ``procedures`` field blank.
+    """
+    columns = ("Procedure", "last_date_logged", "number_logged")
+    rows = [{column: _display(row.get(column)) for column in columns} for row in summary_rows]
+    if not rows:
+        return ""
+    return make_procedure_html(pd.DataFrame(rows, columns=columns))
+
+
+def conferences_html(summary_rows: Iterable[Mapping[str, Any]], max_pgy: int) -> str:
+    """Render prepared category/PGY summaries in the original ten-column table.
+
+    Each row supplies ``Category`` and any of ``PGY1`` through ``PGY4``. The
+    original renderer leaves years above ``max_pgy`` blank. Source values are
+    escaped before its literal interpolation, so their text remains in its own
+    cell even when a category or unit contains HTML punctuation.
+    """
+    columns = ("Category", "PGY1", "PGY2", "PGY3", "PGY4")
+    rows = [
+        {column: html.escape(_display(row.get(column))) for column in columns}
+        for row in summary_rows
+    ]
+    if not rows:
+        return ""
+    return make_conference_table(pd.DataFrame(rows, columns=columns), max_pgy)
+
+
+def evaluations_html(records: list[dict], title: str, header_color: str) -> str:
+    """Render all already-selected assessments with the notebook's exact layout.
+
+    The caller selects specialty and date scope. ``evaluation_rows`` preserves
+    every question, response, comment, and independent narrative, without
+    treating an imported assessment count as a rating. The notebook performs
+    its own name cleanup when it later converts this HTML to Word.
+    """
+    rows = [
+        {
+            "date": row["date"],
+            "rotation": row["rotation"],
+            "evaluator": row["evaluator"],
+            "comments": row["narrative"],
+        }
+        for row in evaluation_rows(records)
+    ]
+    return build_eval_html(rows, html.escape(str(title)), header_color)
+
+
+# Rolling-window calculation adapted from the supplied duty-hours notebook.
+
+DUTY_SOURCE_METHOD_NOTE = (
+    "Duty calculations follow the uploaded log and the original notebook: "
+    "dates without a logged shift are treated as days off. Incomplete logs "
+    "can understate hours and overstate days off."
+)
+
+
+def duty_deep_dive(records: list[dict]) -> dict:
+    """Return un-suffixed legacy duty fields for prefiltered resident records.
+
+    Caller owns resident/date filtering.  Summary snapshots, missing datetimes,
+    and nonnumeric hours never become shifts.  An empty dict denotes absence of
+    usable shift data; an actual calculated zero remains a numeric zero.  The
+    original notebook's undefined extrema windows (``None to None``) become
+    blank strings so that missing dates are not presented as actual windows.
+    """
+    shifts = []
+    for record in records:
+        if (not isinstance(record, dict)
+                or record.get("category") != "duty_hours"
+                or record.get("record_mode") == "snapshot"
+                or not record.get("active", True)):
+            continue
+        values = record.get("values")
+        if not isinstance(values, dict):
+            continue
+        start_raw = values.get("start_datetime") or values.get("start")
+        end_raw = values.get("end_datetime") or values.get("end")
+        if not start_raw or not end_raw:
+            continue
+        try:
+            start = datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+            hours_raw = values.get("reported_hours")
+            if hours_raw is None:
+                hours_raw = record.get("value")
+            if isinstance(hours_raw, bool):
+                continue
+            hours = float(hours_raw)
+            if end < start or not math.isfinite(hours) or hours < 0:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        rotation = record.get("rotation")
+        rotation = "" if rotation is None else str(rotation)
+        is_non_work = bool(re.search("VACATION|LEAVE OF ABSENCE", rotation.upper()))
+        shifts.append((start.date(), end.date(), hours, rotation, is_non_work))
+
+    if not shifts:
+        return {}
+
+    first_day = min(shift[0] for shift in shifts)
+    last_day = max(shift[1] for shift in shifts)
+    worked_days = set()
+    non_work_days = set()
+    daily_hours = defaultdict(float)
+    daily_rotations = defaultdict(set)
+    for start, end, hours, rotation, is_non_work in shifts:
+        if is_non_work:
+            day = start
+            while day <= end:
+                non_work_days.add(day)
+                day += timedelta(days=1)
+        else:
+            if hours > 0:
+                worked_days.add(start)
+            daily_hours[start] += hours
+            if rotation:
+                daily_rotations[start].add(rotation)
+
+    worst_days_off = 28
+    worst_window = ""
+    worst_rotations = set()
+    maximum_average = 0.0
+    maximum_window = ""
+    maximum_rotations = set()
+    start_day = first_day
+    while start_day <= last_day:
+        end_day = start_day + timedelta(days=27)
+        window = [start_day + timedelta(days=offset) for offset in range(28)]
+        days_off = sum(day in non_work_days or day not in worked_days for day in window)
+        rolling_average = sum(daily_hours[day] for day in window) / 4.0
+        if days_off < worst_days_off:
+            worst_days_off = days_off
+            worst_window = f"{start_day.isoformat()} to {end_day.isoformat()}"
+            worst_rotations = set().union(*(daily_rotations[day] for day in window))
+        if rolling_average > maximum_average:
+            maximum_average = rolling_average
+            maximum_window = f"{start_day.isoformat()} to {end_day.isoformat()}"
+            maximum_rotations = set().union(*(daily_rotations[day] for day in window))
+        start_day += timedelta(days=1)
+
+    return {
+        "dh_last_log": max(shift[0] for shift in shifts).isoformat(),
+        "dh_min_days_off": worst_days_off,
+        "dayoff_window": worst_window,
+        "dayoff_rotations": "; ".join(sorted(worst_rotations)),
+        "eightyhr_max": round(maximum_average, 1),
+        "eightyhr_window": maximum_window,
+        "eightyhr_rotations": "; ".join(sorted(maximum_rotations)),
+    }
