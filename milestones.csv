@@ -1,0 +1,5 @@
+resident_name,date,milestone,value,specialty,period_start,period_end,training_year
+"Example, Alex",2026-09-30,PC1,3.0,Medicine,2026-07-01,2026-09-30,PGY2
+"Example, Alex",2026-09-30,ICS1,2.5,Medicine,2026-07-01,2026-09-30,PGY2
+"Example, Alex",2026-09-30,PC1,2.5,Pediatrics,2026-07-01,2026-09-30,PGY2
+"Example, Alex",2026-09-30,ICS1,x,Pediatrics,2026-07-01,2026-09-30,PGY2
