@@ -21,11 +21,12 @@ import re
 from typing import Any
 
 import pandas as pd
+from bs4 import BeautifulSoup
 
 from ccc import model as m
 from ccc import notebook_word as word
 from ccc.annual import FIELD_LABELS as ANNUAL_LABELS
-from ccc.evaluation_summary import evaluation_rows
+from ccc.evaluation_summary import _is_convenience_text, evaluation_rows
 from ccc.reports import _blank, _iso, _number, _text
 
 
@@ -639,7 +640,7 @@ def _prepare_row(ctx: _Context) -> pd.Series:
         ("Pediatrics", "mp3", "PEDIATRIC EVALUATION SUMMARY", "#BFEDD2"),
     ):
         records = [record for record in ctx.evidence
-                   if record.get("category") == "evaluations" and record.get("specialty") == specialty]
+                   if record.get("category") == "evaluations" and evaluation_specialty(record) == specialty]
         if records:
             row[f"{legacy}_{target}"] = evaluations_html(records, title, color)
     # The original renderer calls pd.notna on each field, so every value must
@@ -677,8 +678,9 @@ def build_ccc_summary(
 
     The original formatting, table order, numerical descriptions, name cleanup,
     and Medicine/Pediatrics page breaks are retained. Recorded USMLE scores use
-    the notebook's existing optional table. Additional combined evaluations and
-    self-assessments use its same evaluation layout after the original report.
+    the notebook's existing optional table. Evaluation sections follow the
+    rotation name and show narrative feedback only. Self-assessments use the
+    same evaluation layout after the original report.
     """
     ctx = _context(resident, records, reviews, period_start, period_end, review, tracking)
     row = _prepare_row(ctx)
@@ -692,15 +694,11 @@ def build_ccc_summary(
         word.add_usmle_scores_table(doc, row)
         if scholarly is not None:
             scholarly._tbl.addprevious(doc.tables[-1]._tbl)
-    for title, records in (
-        ("COMBINED EVALUATION SUMMARY", [record for record in ctx.evidence
-                                       if record.get("category") == "evaluations" and record.get("specialty") == "Combined"]),
-        ("RESIDENT SELF-ASSESSMENT", [record for record in ctx.evidence if record.get("category") == "self_assessments"]),
-    ):
-        if records:
-            word.add_page_break(doc)
-            source = evaluations_html(records, title, "#D9EAF7")
-            word.add_html_table_to_doc(doc, word.clean_eval_html_keep_formatting(source, row["subject_name"]), table_width=7.6)
+    self_assessments = [record for record in ctx.evidence if record.get("category") == "self_assessments"]
+    if self_assessments:
+        word.add_page_break(doc)
+        source = evaluations_html(self_assessments, "RESIDENT SELF-ASSESSMENT", "#D9EAF7")
+        word.add_html_table_to_doc(doc, word.clean_eval_html_keep_formatting(source, row["subject_name"]), table_width=7.6)
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
@@ -950,14 +948,160 @@ def conferences_html(summary_rows: Iterable[Mapping[str, Any]], max_pgy: int) ->
     return make_conference_table(pd.DataFrame(rows, columns=columns), max_pgy)
 
 
-def evaluations_html(records: list[dict], title: str, header_color: str) -> str:
-    """Render all already-selected assessments with the notebook's exact layout.
+def evaluation_specialty(record: dict) -> str:
+    """Route a Word evaluation by its rotation, without editing saved evidence.
 
-    The caller selects specialty and date scope. ``evaluation_rows`` preserves
-    every question, response, comment, and independent narrative, without
-    treating an imported assessment count as a rating. The notebook performs
-    its own name cleanup when it later converts this HTML to Word.
+    PEDS, Pediatric and Paediatric rotation names take priority over an upload's
+    specialty label. All other named rotations go to Medicine. For a missing
+    rotation only, retain an explicitly saved Pediatrics label.
     """
+    rotation = _scalar(record.get("rotation")).strip()
+    if rotation:
+        return "Pediatrics" if re.search(r"peds|pa?ediatr", rotation, re.I) else "Medicine"
+    specialty = _scalar(record.get("specialty")).strip()
+    return "Pediatrics" if re.search(r"peds|pa?ediatr", specialty, re.I) else "Medicine"
+
+
+_COMMENT_PREFIX = re.compile(r"^\s*(?:(?:overall|additional|general)\s+)?comments?\s*:\s*", re.I)
+_QUESTION_PREFIX = re.compile(r"^\s*Question(?:\s+[\w.-]+)?\s*(?::\s*(.*))?$", re.I)
+_RESPONSE_PREFIX = re.compile(r"^\s*(?:response|answer|rating|score)\s*:\s*(.*)$", re.I)
+_NARRATIVE_PROMPT = re.compile(
+    r"\b(?:comments?|feedback|strengths?|improv\w*|growth|goals?|recommend\w*|suggest\w*|"
+    r"describe|elaborate|explain|narrative|free[ -]?text|follow[ -]?up)\b", re.I
+)
+
+
+def _feedback_plain(value: Any) -> str:
+    """Read rich-text feedback as plain text, preserving paragraph boundaries."""
+    text = _scalar(value).replace("\r\n", "\n").replace("\r", "\n")
+    if re.search(r"</?(?:p|br|div|li|ul|ol|span|b|strong|i|em|script|style)\b", text, re.I):
+        soup = BeautifulSoup(text, "html.parser")
+        for hidden in soup.find_all(["script", "style"]):
+            hidden.decompose()
+        for br in soup.find_all("br"):
+            br.replace_with("\n")
+        for block in soup.find_all(["p", "div", "li"]):
+            block.insert_after("\n\n")
+        text = soup.get_text()
+    text = html.unescape(text).replace("\u00a0", " ")
+    text = "\n".join(line.strip() for line in text.splitlines())
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _without_comment_labels(value: Any) -> str:
+    lines = []
+    for line in _feedback_plain(value).splitlines():
+        while _COMMENT_PREFIX.match(line):
+            line = _COMMENT_PREFIX.sub("", line, count=1)
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _written_response(question: dict) -> str:
+    """Retain actual prose answers to narrative prompts, excluding rating items."""
+    value = question.get("response")
+    if not isinstance(value, str):
+        return ""
+    response = _without_comment_labels(value)
+    if not response or re.fullmatch(r"[+-]?\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?|%)?", response):
+        return ""
+    kind = _scalar(question.get("response_type") or question.get("question_type") or question.get("type")).casefold()
+    if any(label in kind for label in ("rating", "scale", "choice", "likert", "number", "boolean")):
+        return ""
+    prompt = _feedback_plain(question.get("text"))
+    explicit_text = any(label in kind for label in ("text", "narrative", "comment", "essay"))
+    if explicit_text or (_NARRATIVE_PROMPT.search(prompt)
+                         and not re.search(r"\b(?:rate|rating|select|scale)\b", prompt, re.I)):
+        return _RESPONSE_PREFIX.sub(r"\1", response, count=1)
+    return ""
+
+
+def _legacy_feedback(value: Any) -> str:
+    """Extract feedback from older text blocks containing question/answer labels.
+
+    Structured question comments never go through this parser. It is only for
+    a record's convenience/legacy text field. Multiple-line prompts and rating
+    responses are omitted, while narrative responses and comments are kept.
+    """
+    text = _feedback_plain(value)
+    blocks: list[str] = []
+    buffer: list[str] = []
+    mode = "feedback"
+    prompt = ""
+
+    def flush() -> None:
+        block = "\n".join(buffer).strip()
+        if mode == "response":
+            block = _written_response({"text": prompt, "response": block})
+        if block:
+            blocks.append(block)
+        buffer.clear()
+
+    for line in text.splitlines():
+        question = _QUESTION_PREFIX.match(line)
+        response = _RESPONSE_PREFIX.match(line)
+        if question:
+            flush()
+            mode, prompt = "question", question.group(1) or ""
+        elif _COMMENT_PREFIX.match(line):
+            flush()
+            mode = "feedback"
+            buffer.append(_without_comment_labels(line))
+        elif response:
+            flush()
+            mode = "response"
+            buffer.append(response.group(1))
+        elif re.match(r"^\s*Source value(?:\s*\([^)]*\))?\s*:", line, re.I):
+            flush()
+            mode = "rating"
+        elif mode == "question":
+            prompt += " " + line
+        elif mode in {"feedback", "response"}:
+            buffer.append(line)
+    flush()
+    return "\n\n".join(blocks)
+
+
+def evaluation_comment_text(record: dict) -> str:
+    """Return the author's feedback with no question wording or field labels.
+
+    Preserve the full comments and their original order. Actual repeated
+    comments remain present, but an importer's convenience copy is not added a
+    second time. Source fields are not modified by this display-only cleanup.
+    """
+    questions = record.get("questions") if isinstance(record.get("questions"), list) else []
+    feedback: list[str] = []
+    comments: list[str] = []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        written = _written_response(question)
+        comment = _without_comment_labels(question.get("comment"))
+        if written and written != comment:
+            feedback.append(written)
+        if comment:
+            feedback.append(comment)
+            comments.append(comment)
+    values = record.get("values") if isinstance(record.get("values"), dict) else {}
+    overall = list(dict.fromkeys(value for value in (
+        _without_comment_labels(record.get("overall_comment")),
+        _without_comment_labels(values.get("overall_comments")),
+    ) if value))
+    independent = _legacy_feedback(record.get("text"))
+    parts: list[str] = []
+    if (independent and not _is_convenience_text(independent, feedback, overall)
+            and not _is_convenience_text(independent, comments, overall)):
+        parts.append(independent)
+    parts.extend(feedback)
+    parts.extend(overall)
+    return "\n\n".join(parts)
+
+
+def evaluations_html(records: list[dict], title: str, header_color: str) -> str:
+    """Use the notebook's table layout with narrative feedback in each body row."""
+    prepared = [{**record, "text": evaluation_comment_text(record), "questions": [],
+                 "overall_comment": "", "values": {}, "value": None}
+                for record in records]
     rows = [
         {
             "date": row["date"],
@@ -965,9 +1109,11 @@ def evaluations_html(records: list[dict], title: str, header_color: str) -> str:
             "evaluator": row["evaluator"],
             "comments": row["narrative"],
         }
-        for row in evaluation_rows(records)
+        for row in evaluation_rows(prepared)
     ]
-    return build_eval_html(rows, html.escape(str(title)), header_color)
+    # The notebook's Word converter reads cells with get_text("\n"). Character
+    # references preserve blank lines between comments through that conversion.
+    return build_eval_html(rows, html.escape(str(title)), header_color).replace("<br>", "&#10;")
 
 
 # Rolling-window calculation adapted from the supplied duty-hours notebook.
