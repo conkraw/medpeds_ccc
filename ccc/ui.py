@@ -184,6 +184,10 @@ def _actor() -> str:
 def _reset_uploads() -> None:
     st.session_state.pop("upload_preview", None)
     st.session_state.pop("upload_preview_context", None)
+    for key in list(st.session_state):
+        if key.startswith(("map_", "replace_", "include_", "ack_upload_", "allow_updates_",
+                           "skip_unmatched_", "automatic_skips_")):
+            st.session_state.pop(key, None)
     st.session_state["upload_generation"] = st.session_state.get("upload_generation", 0) + 1
 
 
@@ -323,8 +327,35 @@ def _evidence_table(records: list[dict]) -> pd.DataFrame:
     } for r in records])
 
 
+def _evaluation_status_details(status: dict) -> None:
+    def shown_date(value: str) -> str:
+        parsed = m.parse_date(value)
+        return parsed.strftime("%b %d, %Y") if parsed else "Not available"
+
+    st.caption("Last saved update: " + _pretty_time(status.get("last_updated_at", "")))
+    st.caption("Latest completed evaluation: " + shown_date(status.get("latest_completed_date", "")))
+    st.caption("Latest rotation end: " + shown_date(status.get("latest_rotation_end_date", "")))
+    if status.get("earliest_evaluation_date") and status.get("latest_evaluation_date"):
+        st.caption("Saved evaluation dates: " + shown_date(status["earliest_evaluation_date"])
+                   + " to " + shown_date(status["latest_evaluation_date"]))
+    count = status.get("evaluation_count", 0)
+    st.caption(f"{count:,} evaluation{'s' if count != 1 else ''} saved")
+
+
+def _evaluation_update_summary(state: dict) -> None:
+    from ccc.upload_workflow import evaluation_import_status
+    statuses = evaluation_import_status(state)
+    st.subheader("Evaluation updates")
+    for specialty, column in zip(("Medicine", "Pediatrics"), st.columns(2)):
+        with column, st.container(border=True):
+            st.write(specialty)
+            _evaluation_status_details(statuses[specialty])
+    st.caption("These dates describe saved evaluations across all years. A latest date does not mean every evaluation before it has been received.")
+
+
 def _program_dashboard(state: dict) -> None:
     st.header("Program dashboard")
+    _evaluation_update_summary(state)
     st.caption("Choose a date range to see the evidence currently available for each resident.")
     start, end = _range_controls(state, prefix="dashboard")
     year_filter = st.multiselect("Training years", ["PGY1", "PGY2", "PGY3", "PGY4", "Other"], default=["PGY1", "PGY2", "PGY3", "PGY4", "Other"])
@@ -375,7 +406,7 @@ def _program_dashboard(state: dict) -> None:
         with st.expander("Recent uploads"):
             items = sorted(state["sources"], key=lambda x: x.get("uploaded_at", ""), reverse=True)[:10]
             st.dataframe(pd.DataFrame([{"File": s.get("name", ""), "Category": m.CATEGORIES.get(s.get("kind"), ""),
-                                         "Specialty": s.get("specialty", ""), "Through": s.get("period_end", ""),
+                                         "Specialty": s.get("specialty", ""), "Saved": _pretty_time(s.get("uploaded_at", "")),
                                          "Entries at upload": s.get("record_count", 0), "Status": "Active" if s.get("active", True) else "Excluded"} for s in items]),
                          hide_index=True, width="stretch")
 
@@ -736,56 +767,84 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         st.info("An administrator can add files.")
         return
     from ccc.importers import parse_upload
-    from ccc.upload_workflow import prepare_upload_batch
+    from ccc.upload_workflow import evaluation_import_status, prepare_upload_batch
     st.header("Upload files")
-    st.write("Upload whichever files are ready. One file is enough. Leave the other areas empty and add more files later.")
+    st.write("Start with all available evaluation files for the past three to four years. Later, add new exports here using the same steps. One file is enough.")
     if not state["residents"]:
         st.info("First add the resident roster under Administration so names can be matched correctly.")
         return
-    specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
-    st.caption("Upload Medicine and Pediatrics files as separate batches. Choose Combined for shared administrative reports.")
-    first, last = _range_controls(state, prefix="upload_range")
     generation = st.session_state.get("upload_generation", 0)
     groups = []
-    cols = st.columns(4)
-    with cols[0], st.container(border=True):
-        st.subheader("Evaluations")
-        kind = st.selectbox("Evaluation report", ["evaluations", "self_assessments"], format_func=lambda x: m.CATEGORIES[x], key="kind_eval")
-        files = st.file_uploader("Add evaluation files", type=["csv", "xlsx", "xls", "tab", "tsv"], accept_multiple_files=True, key=f"files_eval_{generation}")
-        groups.append((kind, files))
-        st.caption("Optional. Faculty evaluations or resident self-assessments.")
-    with cols[1], st.container(border=True):
-        st.subheader("Milestones")
-        st.caption("Medicine or Pediatrics")
-        files = st.file_uploader("Add milestone files", type=["pdf", "csv", "xlsx", "xls"], accept_multiple_files=True, key=f"files_milestones_{generation}")
-        groups.append(("milestones", files))
-        st.caption("Optional. PDFs with labeled scores, or a spreadsheet export.")
-    with cols[2], st.container(border=True):
-        st.subheader("Activities")
-        kind = st.selectbox("Activity report", ["procedures", "conferences"], format_func=lambda x: m.CATEGORIES[x], key="kind_activity")
-        files = st.file_uploader("Add activity files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_activity_{generation}")
-        groups.append((kind, files))
-        st.caption("Optional. Procedure logs or conference attendance.")
-    with cols[3], st.container(border=True):
-        st.subheader("Duty hours")
-        kind = st.selectbox("Duty-hour report", ["duty_hours", "duty_violations"], format_func=lambda x: "Shift log" if x == "duty_hours" else "Violation report", key="kind_duty")
-        files = st.file_uploader("Add duty-hour files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_duty_{generation}")
-        groups.append((kind, files))
-        st.caption("Optional. New Innovations shift logs and reported concerns.")
-    count = sum(len(files) for _, files in groups)
+    statuses = evaluation_import_status(state)
+    for specialty, widget, column in zip(("Medicine", "Pediatrics"), ("eval", "peds_eval"), st.columns(2)):
+        with column, st.container(border=True):
+            st.subheader(specialty + " evaluations")
+            _evaluation_status_details(statuses[specialty])
+            files = st.file_uploader("Add " + specialty + " evaluation files",
+                                     type=["tab", "csv", "xlsx", "xls", "tsv"], accept_multiple_files=True,
+                                     key=f"files_{widget}_{generation}")
+            groups.append(("evaluations", files, specialty))
+            st.caption("Select several .tab files at once. This area is optional.")
+    st.caption("Overlapping exports are welcome. Saved duplicates are skipped, and changed entries are flagged for review. Include earlier rotations when checking for evaluations completed late.")
+    with st.expander("Self-assessments and other reports"):
+        specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
+        st.caption("This choice applies to the additional reports below. Choose Combined for a mixed evaluation export or shared administrative reports.")
+        cols = st.columns(4)
+        with cols[0], st.container(border=True):
+            st.subheader("Other evaluations")
+            kind = st.selectbox("Evaluation report", ["self_assessments", "evaluations"], format_func=lambda x: m.CATEGORIES[x], key="kind_eval")
+            files = st.file_uploader("Add self-assessment or mixed evaluation files", type=["csv", "xlsx", "xls", "tab", "tsv"], accept_multiple_files=True, key=f"files_other_eval_{generation}")
+            groups.append((kind, files, specialty))
+        with cols[1], st.container(border=True):
+            st.subheader("Milestones")
+            files = st.file_uploader("Add milestone files", type=["pdf", "csv", "xlsx", "xls"], accept_multiple_files=True, key=f"files_milestones_{generation}")
+            groups.append(("milestones", files, specialty))
+            st.caption("PDFs with labeled scores, or a spreadsheet export.")
+        with cols[2], st.container(border=True):
+            st.subheader("Activities")
+            kind = st.selectbox("Activity report", ["procedures", "conferences"], format_func=lambda x: m.CATEGORIES[x], key="kind_activity")
+            files = st.file_uploader("Add activity files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_activity_{generation}")
+            groups.append((kind, files, specialty))
+        with cols[3], st.container(border=True):
+            st.subheader("Duty hours")
+            kind = st.selectbox("Duty-hour report", ["duty_hours", "duty_violations"], format_func=lambda x: "Shift log" if x == "duty_hours" else "Violation report", key="kind_duty")
+            files = st.file_uploader("Add duty-hour files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_duty_{generation}")
+            groups.append((kind, files, specialty))
+    with st.expander("Dates for reports without dates"):
+        st.caption("Dates inside each export are kept, including older years. These fallback dates are used only when the source does not supply the required dates. They do not limit the history imported.")
+        earliest = min((m.parse_date(r.get("start_date")) for r in state["residents"] if m.parse_date(r.get("start_date"))), default=m.current_academic_start(_today(state)))
+        a, b = st.columns(2)
+        first = a.date_input("Fallback period starts", value=earliest, key="upload_range_start").isoformat()
+        last = b.date_input("Fallback period ends", value=_today(state), key="upload_range_end").isoformat()
+        if first > last:
+            st.error("Choose a fallback end date on or after its start date.")
+            return
+    count = sum(len(files) for _, files, _ in groups)
     if count:
         st.caption(f"{count} file{'s' if count != 1 else ''} selected. Empty upload areas do not need a file.")
     else:
         st.caption("Add at least one file to process. You do not need every report type.")
-    upload_context = (specialty, first, last, tuple((kind, f.name, hashlib.sha256(f.getvalue()).hexdigest()) for kind, files in groups for f in files))
+    upload_context = (first, last, tuple((kind, specialty, f.name, hashlib.sha256(f.getvalue()).hexdigest()) for kind, files, specialty in groups for f in files))
     process_label = f"Process {count} file{'s' if count != 1 else ''}" if count else "Process files"
     if st.button(process_label, type="primary", disabled=count == 0, width="stretch"):
-        if count > 30 or sum(f.size for _, files in groups for f in files) > 60 * 1024 * 1024:
-            st.error("Add up to 30 files and 60 MB in one batch. Each file can be up to 15 MB.")
+        if count > 100 or sum(f.size for _, files, _ in groups for f in files) > 60 * 1024 * 1024:
+            st.error("Add up to 100 files and 60 MB in one batch. Each file can be up to 15 MB. Larger histories can be saved in successive batches.")
             return
+        evaluation_specialties = {}
+        for kind, specialty, filename, digest in upload_context[2]:
+            if kind != "evaluations":
+                continue
+            previous_specialty = evaluation_specialties.get(digest)
+            if previous_specialty and previous_specialty != specialty:
+                st.session_state.pop("upload_preview", None)
+                st.session_state.pop("upload_preview_context", None)
+                st.error("The same evaluation file was selected for both " + previous_specialty + " and " + specialty
+                         + ": " + _escape(filename) + ". Keep the file only in the correct specialty area, then process again.")
+                return
+            evaluation_specialties[digest] = specialty
         previews = []
         with st.spinner("Reading files and checking the fields…"):
-            for kind, files in groups:
+            for kind, files, specialty in groups:
                 for file in files:
                     data = file.getvalue()
                     result = parse_upload(file.name, data, kind, specialty, period_start=first, period_end=last)
@@ -812,6 +871,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         source = preview["source"]
         with st.container(border=True):
             st.text(source["name"])
+            st.caption(source["specialty"] + " · " + m.CATEGORIES.get(source["kind"], source["kind"]))
             if preview.get("previously_uploaded", preview.get("duplicate", False)):
                 st.info("This file was uploaded before. Saved entries will be skipped, and any remaining entries can be added after matching the residents.")
             for error in preview["errors"]:
@@ -837,16 +897,38 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
     roster_ids = [r["id"] for r in sorted(state["residents"], key=lambda r: r["name"].casefold())]
     roster_labels = _resident_labels(state["residents"])
+    match_batch = hashlib.sha256("|".join(p["source"]["id"] for p in included).encode()).hexdigest()[:16]
+    auto_matches = {key: m.match_resident(state, record.get("resident_name", ""), record.get("external_id", ""))
+                    for key, record in names.items()}
+    unmatched = sum(value not in roster_ids for value in auto_matches.values())
+    skip_unmatched = st.checkbox("Skip unmatched names for this import", value=False,
+                                 key="skip_unmatched_" + match_batch,
+                                 help="Useful when an export includes residents from other programs. Check unfamiliar spellings before skipping. You can change any individual match below.")
+    prior_skip = st.session_state.get("skip_unmatched_applied_" + match_batch, False)
+    automatic_skips = set(st.session_state.get("automatic_skips_" + match_batch, []))
+    if unmatched:
+        st.caption(f"{unmatched} name{'s' if unmatched != 1 else ''} need a match or an explicit choice to skip.")
     mappings = {}
     for key, record in names.items():
-        auto = m.match_resident(state, record.get("resident_name", ""), record.get("external_id", ""))
+        auto = auto_matches[key]
         options = ["__choose__", *roster_ids, "__skip__"]
         label = str(record.get("resident_name") or "Unnamed resident")
         if record.get("external_id"):
             label += " · source ID " + str(record["external_id"])
+        widget_key = "map_" + match_batch + "_" + hashlib.sha256(key.encode()).hexdigest()[:16]
+        if skip_unmatched and not prior_skip and auto not in roster_ids and st.session_state.get(widget_key, "__choose__") == "__choose__":
+            st.session_state[widget_key] = "__skip__"
+            automatic_skips.add(widget_key)
+        elif prior_skip and not skip_unmatched and widget_key in automatic_skips and st.session_state.get(widget_key) == "__skip__":
+            st.session_state[widget_key] = "__choose__"
         mappings[key] = st.selectbox(_escape(label), options, index=options.index(auto) if auto in options else 0,
                                      format_func=lambda x: "Choose a resident" if x == "__choose__" else "Skip these entries" if x == "__skip__" else roster_labels[x],
-                                     key="map_" + hashlib.sha256(key.encode()).hexdigest()[:16])
+                                     key=widget_key)
+    st.session_state["skip_unmatched_applied_" + match_batch] = skip_unmatched
+    st.session_state["automatic_skips_" + match_batch] = sorted(automatic_skips) if skip_unmatched else []
+    skipped_names = sum(value == "__skip__" for value in mappings.values())
+    if skipped_names:
+        st.caption(f"{skipped_names} name{'s' if skipped_names != 1 else ''} set to skip. Their entries will not be added in this import.")
     if "__choose__" in mappings.values():
         st.warning("Match the remaining names. If a resident is missing, add them under Administration; this preview will remain available.")
     remember = st.checkbox("Remember confirmed name variations for future uploads", value=True)
@@ -869,7 +951,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         possible = stats["possible_updates"]
         st.caption(f"{stats['new_records']} new entries after matching and any selected replacements; {stats['duplicates']} duplicate entries will be skipped.")
         if not batch_preview.saved_source_ids:
-            st.info("No new entries to save. The selected entries are already saved or were set to skip.")
+            st.info("No new entries to save. The selected entries are already saved or were set to skip. The last saved update date is unchanged.")
             return
         if possible:
             overlap_label = "entry overlaps" if possible == 1 else "entries overlap"
@@ -889,7 +971,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             batch = prepare_upload_batch(state, included, mappings, _actor(), replacements=replacements,
                                          allow_possible_updates=allow_updates)
             if not batch.saved_source_ids:
-                st.info("No new entries to save. The selected entries are already saved or were set to skip.")
+                st.info("No new entries to save. The selected entries are already saved or were set to skip. The last saved update date is unchanged.")
                 return
             candidate = batch.candidate
             saved_sources = [(p, p["source"]["id"]) for p in included if p["source"]["id"] in batch.saved_source_ids]

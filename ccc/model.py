@@ -385,6 +385,90 @@ def coverage_exclusions(state: dict, resident_id: str, start: Any, end: Any) -> 
             and low <= parse_date(r["date"]) <= high and not record_in_window(r, start, end)]
 
 
+def source_export_date(value: Any) -> str:
+    """Read an existing export date without substituting an upload date."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if math.isfinite(value) and 59 <= value <= 100_000:
+            return (datetime(1899, 12, 30) + timedelta(days=value)).date().isoformat()
+        return ""
+    text = str(value or "").strip()
+    if not text or len(text) > 80:
+        return ""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M",
+                "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def evaluation_source_period(record: dict) -> tuple[str, str]:
+    """Return source-supplied assessment dates, never selected upload fallbacks.
+
+    Older encrypted records retain their original date columns in raw. Using
+    those columns also makes raw TAB and converted CSV exports equivalent.
+    """
+    raw = record.get("raw") if isinstance(record.get("raw"), dict) else {}
+    normalized = {re.sub(r"[^a-z0-9]", "", str(key).casefold()): value for key, value in raw.items()}
+
+    def first(*keys: str) -> Any:
+        return next((normalized[key] for key in keys if str(normalized.get(key) or "").strip()), "")
+
+    report_range = str(first("reportdates", "reportperiod"))
+    dates = re.findall(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{2,4}", report_range)
+    ranged = [source_export_date(value) for value in dates[:2]] if len(dates) >= 2 else ["", ""]
+    result = []
+    for index, part in enumerate(("start", "end")):
+        value = source_export_date(record.get(f"source_period_{part}"))
+        if not value:
+            value = source_export_date(first(f"period{part}", f"evaluation{part}date", f"{part}date")) or ranged[index]
+        if not value and (record.get(f"period_{part}_is_fallback") is False
+                          or record.get("date_source") == f"source period {part}"):
+            value = source_export_date(record.get(f"period_{part}"))
+        result.append(value)
+    return result[0], result[1]
+
+
+def _canonical_question(question: Any) -> Any:
+    """Ignore conversion-only rating spelling without changing saved evidence."""
+    if not isinstance(question, dict):
+        return question
+    result = dict(question)
+    response = question.get("response")
+    if isinstance(response, (str, int, float)) and not isinstance(response, bool):
+        numeric = re.fullmatch(r"([+-]?)(\d+)(?:\.(\d*))?|([+-]?)\.(\d+)", str(response).strip())
+        if numeric:
+            sign = numeric.group(1) or numeric.group(4) or ""
+            integer = (numeric.group(2) or "0").lstrip("0") or "0"
+            fraction = (numeric.group(3) or numeric.group(5) or "").rstrip("0")
+            sign = "-" if sign == "-" and (integer != "0" or fraction) else ""
+            result["response"] = sign + integer + ("." + fraction if fraction else "")
+    # The original notebook's pandas conversion turns literal n/a into blank.
+    # Treat that exact missing-comment marker alike; keep all prose verbatim.
+    if isinstance(question.get("comment"), str) and question["comment"].strip().casefold() == "n/a":
+        result["comment"] = ""
+    return result
+
+
+def _derived_assessment_text(questions: list, overall_comment: Any) -> str | None:
+    """Reconstruct the importer's aggregate only from known comment fields."""
+    if not isinstance(overall_comment, str) or any(not isinstance(question, dict) for question in questions):
+        return None
+    comments = [question.get("comment") for question in questions] + [overall_comment]
+    if any(not isinstance(comment, str) for comment in comments):
+        return None
+    return "\n\n".join(dict.fromkeys(comment.strip() for comment in comments if comment.strip()))
+
+
 def _canonical(record: dict, *, identity_only: bool = False) -> dict:
     if identity_only and record.get("external_record_id"):
         return {k: record.get(k) for k in ("resident_id", "category", "specialty", "external_record_id")}
@@ -396,7 +480,24 @@ def _canonical(record: dict, *, identity_only: bool = False) -> dict:
     # Native export event IDs protect two otherwise identical real encounters.
     if record.get("external_record_id"):
         keys.append("external_record_id")
-    return {k: record.get(k) for k in keys}
+    result = {k: record.get(k) for k in keys}
+    if record.get("category") in {"evaluations", "self_assessments"}:
+        # Two evaluations completed on one day may cover different rotations.
+        # Preserve that distinction while ignoring a later upload's fallback
+        # reporting range, which is not part of an evaluation's identity.
+        result["source_period_start"], result["source_period_end"] = evaluation_source_period(record)
+        if not identity_only and isinstance(result.get("questions"), list):
+            questions = result["questions"]
+            result["questions"] = [_canonical_question(question) for question in questions]
+            if any(isinstance(question, dict) and question.get("comment") != normalized.get("comment")
+                   for question, normalized in zip(questions, result["questions"])):
+                original_text = _derived_assessment_text(questions, record.get("overall_comment"))
+                if original_text is not None and result.get("text") == original_text:
+                    # An exact match proves the aggregate is importer-derived.
+                    # Never remove a marker embedded in a longer comment or
+                    # rewrite independently authored aggregate narrative.
+                    result["text"] = _derived_assessment_text(result["questions"], record.get("overall_comment"))
+    return result
 
 
 def record_fingerprint(record: dict, *, identity_only: bool = False) -> str:
@@ -466,7 +567,27 @@ def import_records(state: dict, records: list[dict], source: dict, mappings: dic
     option and a fresh source identifier. Existing duplicate and revision
     checks still apply to every row. Replacements retain exact-file rejection.
     """
-    result = copy.deepcopy(state)
+    return _import_records_into_candidate(
+        copy.deepcopy(state), records, source, mappings, actor,
+        replace_source_id=replace_source_id, allow_possible_updates=allow_possible_updates,
+        allow_partial_reimport=allow_partial_reimport,
+    )
+
+
+def _import_records_into_candidate(result: dict, records: list[dict], source: dict,
+                                   mappings: dict[str, str], actor: str, *,
+                                   replace_source_id: str | None = None,
+                                   allow_possible_updates: bool = False,
+                                   allow_partial_reimport: bool = False,
+                                   prepared_result: tuple[list[dict], dict] | None = None) -> tuple[dict, dict]:
+    """Append to a private candidate owned by the caller, never saved state.
+
+    Bulk additive imports may reuse preparation against this exact candidate.
+    The candidate is discarded if any file or subsequent persistence fails.
+    Public imports copy first; replacements always run fresh preparation.
+    """
+    if prepared_result is not None and replace_source_id is not None:
+        raise ValidationError("A replacement must be checked against the active evidence again.")
     # Hash+context identifies the same uploaded report; different reporting dates
     # remain visible as an explicit potential re-import instead of silent reuse.
     for old in result["sources"]:
@@ -481,7 +602,7 @@ def import_records(state: dict, records: list[dict], source: dict, mappings: dic
             raise ValidationError("A replacement must have the same category and specialty.")
         previous["active"] = False
         previous["replaced_at"] = now_iso()
-    prepared, stats = prepare_records(result, records, mappings)
+    prepared, stats = prepared_result if prepared_result is not None else prepare_records(result, records, mappings)
     if not prepared:
         raise ValidationError("There are no new records to save after matching and duplicate checks.")
     if stats["possible_updates"] and not allow_possible_updates:
