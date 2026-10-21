@@ -663,6 +663,25 @@ def prepare_notebook_row(
     return _prepare_row(ctx)
 
 
+def _restore_empty_evaluator_cells(doc: Any, source_html: str) -> None:
+    """Keep blank evaluator cells empty instead of the notebook's XX fallback."""
+    source_table = BeautifulSoup(source_html, "html.parser").find("table")
+    if source_table is None:
+        return
+    source_rows = source_table.find_all("tr")
+    if not source_rows:
+        return
+    title = source_rows[0].get_text().strip()
+    table = next((table for table in doc.tables if table.cell(0, 0).text == title), None)
+    if table is None:
+        return
+    for source_row, rendered_row in zip(source_rows, table.rows):
+        cells = source_row.find_all(["td", "th"], recursive=False)
+        if (len(cells) == 3 and [cell.get("colspan", "1") for cell in cells] == ["2", "2", "6"]
+                and not cells[-1].get_text().strip()):
+            rendered_row.cells[-1].text = ""
+
+
 def build_ccc_summary(
     resident: dict,
     records: list[dict],
@@ -687,6 +706,10 @@ def build_ccc_summary(
     doc = word.create_doc(row, 0)
     if doc is None:
         raise m.ValidationError("Choose a valid review checkpoint before preparing the CCC summary.")
+    target = word.find_resident_target(row)
+    for key in (f"mp5_{target}", f"mp3_{target}"):
+        source = word.clean_eval_html_keep_formatting(word.get_val(row, key), row["subject_name"])
+        _restore_empty_evaluator_cells(doc, source)
     if any(word.has_value(row, key) for key in ("step1", "step2ck", "step3")):
         # The call is commented out in the source notebook. When scores were
         # entered, use that existing helper in its original intended position.
@@ -698,7 +721,9 @@ def build_ccc_summary(
     if self_assessments:
         word.add_page_break(doc)
         source = evaluations_html(self_assessments, "RESIDENT SELF-ASSESSMENT", "#D9EAF7")
-        word.add_html_table_to_doc(doc, word.clean_eval_html_keep_formatting(source, row["subject_name"]), table_width=7.6)
+        source = word.clean_eval_html_keep_formatting(source, row["subject_name"])
+        word.add_html_table_to_doc(doc, source, table_width=7.6)
+        _restore_empty_evaluator_cells(doc, source)
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
@@ -1099,9 +1124,18 @@ def evaluation_comment_text(record: dict) -> str:
 
 def evaluations_html(records: list[dict], title: str, header_color: str) -> str:
     """Use the notebook's table layout with narrative feedback in each body row."""
-    prepared = [{**record, "text": evaluation_comment_text(record), "questions": [],
-                 "overall_comment": "", "values": {}, "value": None}
-                for record in records]
+    prepared = []
+    for record in records:
+        display = {**record, "text": evaluation_comment_text(record), "questions": [],
+                   "overall_comment": "", "values": {}, "value": None}
+        # New Innovations' Session Name is retained as form during import.
+        # Blank the whole evaluator cell for resident-to-resident evaluations,
+        # including any status label, without changing the stored source.
+        session_name = " ".join(_scalar(record.get("form")).split()).casefold()
+        if session_name in {"res eval res", "resident evaluation of resident"}:
+            display["evaluator"] = ""
+            display["evaluator_status"] = ""
+        prepared.append(display)
     rows = [
         {
             "date": row["date"],
