@@ -185,7 +185,7 @@ def _reset_uploads() -> None:
     st.session_state.pop("upload_preview", None)
     st.session_state.pop("upload_preview_context", None)
     for key in list(st.session_state):
-        if key.startswith(("map_", "replace_", "include_", "ack_upload_", "allow_updates_",
+        if key.startswith(("map_", "replace_", "include_", "omit_upload_", "ack_upload_", "allow_updates_",
                            "skip_unmatched_", "automatic_skips_")):
             st.session_state.pop(key, None)
     st.session_state["upload_generation"] = st.session_state.get("upload_generation", 0) + 1
@@ -786,6 +786,25 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             groups.append(("evaluations", files, specialty))
             st.caption("Select several .tab files at once. This area is optional.")
     st.caption("Overlapping exports are welcome. Saved duplicates are skipped, and changed entries are flagged for review. Include earlier rotations when checking for evaluations completed late.")
+    with st.expander("Saved evaluation files"):
+        history = []
+        seen_files = set()
+        for source in sorted(state["sources"], key=lambda item: item.get("uploaded_at", ""), reverse=True):
+            if (not source.get("active", True) or source.get("kind") not in {"evaluations", "self_assessments"}
+                    or not source.get("record_count", 0)):
+                continue
+            file_key = (source.get("sha256") or source["id"], source.get("kind"), source.get("specialty"))
+            if file_key in seen_files:
+                continue
+            seen_files.add(file_key)
+            history.append({"File": source.get("name", ""), "Specialty": source.get("specialty", ""),
+                            "Report": m.CATEGORIES.get(source.get("kind"), ""),
+                            "Last saved": _pretty_time(source.get("uploaded_at", ""))})
+        if history:
+            st.dataframe(pd.DataFrame(history), hide_index=True, width="stretch")
+            st.caption("These files added saved evaluation entries. Repeated copies appear once, with their most recent save. Files with no new entries do not change this history.")
+        else:
+            st.caption("No saved evaluation files to show.")
     with st.expander("Self-assessments and other reports"):
         specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
         st.caption("This choice applies to the additional reports below. Choose Combined for a mixed evaluation export or shared administrative reports.")
@@ -843,14 +862,29 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 return
             evaluation_specialties[digest] = specialty
         previews = []
+        parsed_files = {}
+        saved_file_keys = {(source.get("sha256"), source.get("kind"), source.get("specialty"))
+                           for source in state["sources"] if source.get("active", True)}
         with st.spinner("Reading files and checking the fields…"):
             for kind, files, specialty in groups:
                 for file in files:
                     data = file.getvalue()
-                    result = parse_upload(file.name, data, kind, specialty, period_start=first, period_end=last)
-                    source = {"id": m.new_id(), "name": file.name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+                    digest = hashlib.sha256(data).hexdigest()
+                    # Reuse parsing within this batch only. The extension can
+                    # affect the reader, and each copy keeps its own filename.
+                    parse_key = (digest, kind, specialty, Path(file.name).suffix.lower())
+                    if parse_key in parsed_files:
+                        result = copy.deepcopy(parsed_files[parse_key])
+                        for record in result.records:
+                            record["source_name"] = Path(file.name).name
+                    else:
+                        result = parse_upload(file.name, data, kind, specialty, period_start=first, period_end=last)
+                        parsed_files[parse_key] = result
+                    source = {"id": m.new_id(), "name": file.name, "sha256": digest, "size": len(data),
                               "kind": kind, "specialty": specialty, "period_start": first, "period_end": last, "profile": result.profile}
-                    previously_uploaded = any(s.get("active", True) and all(s.get(k) == source[k] for k in ("sha256", "kind", "specialty", "period_start", "period_end")) for s in state["sources"])
+                    # A content match is a hint, not a reason to skip parsing or
+                    # matching. The roster may now include previously skipped names.
+                    previously_uploaded = (digest, kind, specialty) in saved_file_keys
                     previews.append({"source": source, "data": data, "records": result.records, "errors": result.errors,
                                      "warnings": result.warnings, "previously_uploaded": previously_uploaded})
         st.session_state["upload_preview"] = previews
@@ -865,31 +899,82 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     if st.session_state.get("upload_preview_context") != upload_context:
         st.warning("The files, report types, specialty or dates have changed. Process the selected files again to update the preview. If you returned from another page, add the same files again.")
         return
-    st.info("Not saved yet. Check the files, resident names, and reporting dates below.")
-    included = []
-    entry_previews = []
-    for i, preview in enumerate(previews):
-        source = preview["source"]
-        with st.container(border=True):
-            st.text(source["name"])
-            st.caption(source["specialty"] + " · " + m.CATEGORIES.get(source["kind"], source["kind"]))
-            if preview.get("previously_uploaded", preview.get("duplicate", False)):
-                st.info("This file was uploaded before. Saved entries will be skipped, and any remaining entries can be added after matching the residents.")
+    st.caption("Not saved yet. Check the resident summary, then save. Files with no new entries are skipped automatically.")
+    batch_summary = st.container()
+    readable = [preview for preview in previews if preview["records"] and not preview["errors"]]
+    readable_ids = {preview["source"]["id"] for preview in readable}
+    file_labels = {preview["source"]["id"]: f"{i + 1}. {preview['source']['name']} · {preview['source']['specialty']}"
+                   for i, preview in enumerate(previews)}
+    file_batch = hashlib.sha256("|".join(preview["source"]["id"] for preview in previews).encode()).hexdigest()[:16]
+    with st.expander("File details"):
+        file_status = st.container()
+        omitted = set(st.multiselect("Leave files out of this import", [preview["source"]["id"] for preview in readable],
+                                    format_func=lambda source_id: file_labels[source_id], key="omit_upload_" + file_batch,
+                                    help="Optional. Readable files are included automatically. Duplicate entries are skipped when you save."))
+        for preview in previews:
             for error in preview["errors"]:
-                st.error(_escape(error))
+                st.error(_escape(preview["source"]["name"] + ": " + error))
             for warning in preview["warnings"]:
-                st.warning(_escape(warning))
-            usable = bool(preview["records"]) and not preview["errors"]
-            keep = st.checkbox(f"Include this file · {len(preview['records'])} entries", value=usable, disabled=not usable,
-                               key="include_" + source["id"])
-            if keep:
-                included.append(preview)
-            if preview["records"]:
-                # Fill this after roster matching so evaluation previews never
-                # expose the other residents in a program-wide source export.
-                entry_previews.append((preview, st.container()))
+                st.warning(_escape(preview["source"]["name"] + ": " + warning))
+    included = [preview for preview in readable if preview["source"]["id"] not in omitted]
+
+    def show_file_summary(batch=None, resident_mappings=None) -> None:
+        """Summarize actual batch results without a card for every file."""
+        saved_ids = set(batch.saved_source_ids) if batch is not None else set()
+        skipped_ids = set(batch.skipped_source_ids) if batch is not None else set()
+        new_counts = {source["id"]: source.get("record_count", 0) for source in batch.candidate["sources"]
+                      if source["id"] in saved_ids} if batch is not None else {}
+        valid_residents = {resident["id"] for resident in state["residents"]}
+        counts = Counter()
+        rows = []
+        for preview in previews:
+            source = preview["source"]
+            source_id = source["id"]
+            if source_id not in readable_ids:
+                label, status = "Could not read, left out", "unreadable"
+            elif source_id in omitted:
+                label, status = "Left out of this import", "omitted"
+            elif source_id in saved_ids:
+                label, status = "Ready to save", "ready"
+            elif source_id in skipped_ids:
+                has_selected_entries = any((resident_mappings or {}).get(m.mapping_key(record)) in valid_residents
+                                           for record in preview["records"])
+                if has_selected_entries:
+                    label, status = "Duplicate entries, skipped", "duplicate"
+                else:
+                    label, status = "No selected resident entries, skipped", "no_roster"
+            else:
+                label, status = "Check resident matches or warnings", "pending"
+            counts[status] += 1
+            rows.append({"File": source["name"], "Specialty": source["specialty"],
+                         "Report": m.CATEGORIES.get(source["kind"], source["kind"]), "Status": label,
+                         "New entries": new_counts.get(source_id, 0) if batch is not None else None})
+        with file_status:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        with batch_summary:
+            parts = []
+            if batch is not None:
+                parts.append(f"{counts['ready']} file{'s' if counts['ready'] != 1 else ''} ready to save")
+            for key, singular, plural in (
+                    ("duplicate", "duplicate-only file skipped", "duplicate-only files skipped"),
+                    ("no_roster", "file with no selected resident entries", "files with no selected resident entries"),
+                    ("omitted", "file left out", "files left out")):
+                if counts[key]:
+                    parts.append(f"{counts[key]} {singular if counts[key] == 1 else plural}")
+            if parts:
+                st.write(" · ".join(parts))
+            if batch is not None:
+                stats = batch.stats
+                st.caption(f"{stats['new_records']} new entries after matching and any selected replacements; {stats['duplicates']} duplicate entries will be skipped.")
+            if counts["unreadable"]:
+                number = counts["unreadable"]
+                st.warning(f"{number} file{'s' if number != 1 else ''} could not be read and will be left out. Open File details to check. Readable files can still be saved.")
+            if any(preview["warnings"] for preview in included):
+                st.warning("Some files have warnings. Open File details to check them before saving.")
+
     if not included:
-        st.info("Include at least one readable file to save. You can leave files with errors out of this batch.")
+        show_file_summary()
+        st.info("No readable files are selected to save. Check File details or add another file.")
         return
     all_records = [r for p in included for r in p["records"]]
     names = {}
@@ -984,18 +1069,6 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             resident_match(key)
         st.session_state["skip_unmatched_applied_" + match_batch] = skip_unmatched
         st.session_state["automatic_skips_" + match_batch] = sorted(automatic_skips) if skip_unmatched else []
-    for preview, container in entry_previews:
-        visible_records = []
-        for record in preview["records"]:
-            key = m.mapping_key(record)
-            if (record.get("category") not in evaluation_categories
-                    or mappings.get(key) in roster_ids
-                    or m.normalize_name(record.get("resident_name", "")) in roster_names
-                    or str(record.get("external_id", "")).strip() in roster_external_ids):
-                visible_records.append(record)
-        if visible_records:
-            with container, st.expander("Show parsed entries"):
-                st.dataframe(_evidence_table(visible_records), hide_index=True, width="stretch")
     skipped_names = sum(value == "__skip__" for value in mappings.values())
     if roster_summary is not None:
         evaluation_counts = Counter()
@@ -1037,21 +1110,22 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                                                     format_func=lambda x: "Add as a new upload" if x == "__none__" else labels[x], key="replace_" + src["id"])
     possible = 0
     preview_problem = False
+    batch_preview = None
     try:
         batch_preview = prepare_upload_batch(state, included, mappings, _actor(), replacements=replacements,
                                              allow_possible_updates=True)
         stats = batch_preview.stats
         possible = stats["possible_updates"]
-        st.caption(f"{stats['new_records']} new entries after matching and any selected replacements; {stats['duplicates']} duplicate entries will be skipped.")
-        if not batch_preview.saved_source_ids:
-            st.info("No new entries to save. The selected entries are already saved or were set to skip. The last saved update date is unchanged.")
-            return
         if possible:
             overlap_label = "entry overlaps" if possible == 1 else "entries overlap"
             st.warning(f"{possible} {overlap_label} saved evidence or another selected file with changed content. Review the overlaps before confirming they should be kept as additional evidence.")
     except m.ValidationError as exc:
         preview_problem = True
         st.error(str(exc))
+    show_file_summary(batch_preview, mappings)
+    if batch_preview is not None and not batch_preview.saved_source_ids:
+        st.info("No new entries to save. The selected entries are already saved or were set to skip. The last saved update date is unchanged.")
+        return
     preview_id = hashlib.sha256(json.dumps({"sources": [p["source"]["id"] for p in included],
                                            "mappings": mappings, "replacements": replacements}, sort_keys=True).encode()).hexdigest()[:16]
     allow_updates = st.checkbox("I checked overlapping entries and want to keep any remaining revisions as additional evidence", disabled=possible == 0, key="allow_updates_" + preview_id)
