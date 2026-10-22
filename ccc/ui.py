@@ -770,6 +770,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     from ccc.upload_workflow import evaluation_import_status, prepare_upload_batch
     st.header("Upload files")
     st.write("Start with all available evaluation files for the past three to four years. Later, add new exports here using the same steps. One file is enough.")
+    st.caption("Only entries matched to residents in your Administration roster are saved to encrypted GitHub storage. Original export files are used for processing and are not saved to GitHub.")
     if not state["residents"]:
         st.info("First add the resident roster under Administration so names can be matched correctly.")
         return
@@ -802,7 +803,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                             "Last saved": _pretty_time(source.get("uploaded_at", ""))})
         if history:
             st.dataframe(pd.DataFrame(history), hide_index=True, width="stretch")
-            st.caption("These files added saved evaluation entries. Repeated copies appear once, with their most recent save. Files with no new entries do not change this history.")
+            st.caption("This is the history of files that supplied saved entries for your roster. New imports keep the matched entries without storing the original export. Repeated copies appear once, with their most recent save.")
         else:
             st.caption("No saved evaluation files to show.")
     with st.expander("Self-assessments and other reports"):
@@ -885,11 +886,15 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                     # A content match is a hint, not a reason to skip parsing or
                     # matching. The roster may now include previously skipped names.
                     previously_uploaded = (digest, kind, specialty) in saved_file_keys
-                    previews.append({"source": source, "data": data, "records": result.records, "errors": result.errors,
+                    previews.append({"source": source, "records": result.records, "errors": result.errors,
                                      "warnings": result.warnings, "previously_uploaded": previously_uploaded})
         st.session_state["upload_preview"] = previews
         st.session_state["upload_preview_context"] = upload_context
     previews = st.session_state.get("upload_preview", [])
+    for preview in previews:
+        # Discard whole-export bytes left by an older unsaved preview. Parsed
+        # rows stay in memory until matching and replacement checks finish.
+        preview.pop("data", None)
     if not previews:
         with st.expander("Help choosing an export"):
             st.write("Use the original New Innovations exports. The app reads CSV, Excel, tab-delimited files, and the HTML-style Excel files used by the older reports. Scanned or unlabeled milestone PDFs need a labeled spreadsheet; they are not assigned scores by position.")
@@ -1098,7 +1103,6 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     if "__choose__" in mappings.values():
         st.warning("Match the remaining names. If a resident is missing, add them under Administration; this preview will remain available.")
     remember = st.checkbox("Remember confirmed name variations for future uploads", value=True)
-    archive = st.checkbox("Keep an encrypted copy of each original file", value=True)
     with st.expander("Replacing an earlier upload"):
         st.caption("Use this only when the new file is a complete replacement for the selected old file. Excluding the old upload removes its entries from live views; finalized review snapshots are preserved.")
         replacements = {}
@@ -1154,16 +1158,11 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                         resident.setdefault("aliases", []).append(alias)
                         candidate = m.save_resident(candidate, resident, _actor())
             m.validate_state(candidate)
-            # Preflight expansion/size before making any source-file writes.
+            # Persist only the roster-matched candidate. Original export bytes
+            # must never be archived, even when they contain a matched resident.
             encrypt_state(candidate, st.session_state["encryption_keys"])
-            if archive:
-                with st.spinner("Protecting and saving original files…"):
-                    for preview, source_id in saved_sources:
-                        path, sha = store.write_blob(source_id, preview["data"])
-                        src = next(s for s in candidate["sources"] if s["id"] == source_id)
-                        src.update({"blob_id": source_id, "blob_path": path, "blob_sha": sha})
             count_saved = len(saved_sources)
-            message = f"Saved {count_saved} file{'s' if count_saved != 1 else ''}. Resident dashboards are updated."
+            message = f"Saved matched entries from {count_saved} file{'s' if count_saved != 1 else ''}. Resident dashboards are updated."
             if batch.skipped_source_ids:
                 count_skipped = len(batch.skipped_source_ids)
                 message += f" Skipped {count_skipped} file{'s' if count_skipped != 1 else ''} with no new entries."
@@ -1362,7 +1361,7 @@ def _roster(state: dict, store: GitHubStore) -> None:
                     st.write(f"It also removes {annual_count} yearly progress entries and their saved value history.")
             else:
                 st.write("This resident has no saved evidence or CCC reviews. Removing them deletes this roster entry.")
-            st.caption("For a real resident whose history should stay available, change their status to Inactive instead. Removal keeps original encrypted uploads, older backups, and previous repository versions.")
+            st.caption("For a real resident whose history should stay available, change their status to Inactive instead. Earlier encrypted file copies, older backups, and previous repository versions remain after removal.")
             confirmed = st.checkbox("I understand and want to remove this resident", key=f"confirm_remove_{chosen}_{state['revision']}")
             if st.button("Remove resident", disabled=not confirmed or bool(st.session_state.get("pending_save"))):
                 try:
@@ -1413,11 +1412,14 @@ def _roster(state: dict, store: GitHubStore) -> None:
 
 def _archive_management(state: dict, store: GitHubStore, keys: list[str]) -> None:
     st.subheader("Uploads and backups")
+    st.caption("New imports save only entries matched to your roster. Original export files are not stored in GitHub.")
     if state["sources"]:
         sources = sorted(state["sources"], key=lambda s: s.get("uploaded_at", ""), reverse=True)
         st.dataframe(pd.DataFrame([{"File": s["name"], "Category": m.CATEGORIES.get(s.get("kind"), ""), "Specialty": s.get("specialty", ""),
                                     "Saved": _pretty_time(s.get("uploaded_at")), "Original copy": "Encrypted" if s.get("blob_id") else "Not retained",
                                     "Status": "Active" if s.get("active", True) else "Excluded"} for s in sources]), hide_index=True, width="stretch")
+        if any(source.get("blob_id") for source in sources):
+            st.info("Earlier uploads have encrypted original-file copies in GitHub. Those copies may contain residents outside your roster. This update stops saving new original files, but does not remove previously saved copies or repository history.")
         active = [s for s in sources if s.get("active", True)]
         if active:
             with st.expander("Exclude an incorrect upload"):
@@ -1434,7 +1436,7 @@ def _archive_management(state: dict, store: GitHubStore, keys: list[str]) -> Non
                     except m.ValidationError as exc:
                         st.error(str(exc))
     st.markdown("**Encrypted dashboard backup**")
-    st.caption("Includes resident records, imported evidence, reviews and change history. Original file copies remain separately encrypted in the data repository; this download does not contain those copies.")
+    st.caption("Includes resident records, matched evidence, reviews and change history. It does not contain original export files.")
     st.download_button("Download encrypted dashboard backup", encrypt_state(state, keys),
                        "resident-dashboard-backup.enc", "application/octet-stream")
     with st.expander("Restore an encrypted dashboard backup"):
@@ -1445,7 +1447,7 @@ def _archive_management(state: dict, store: GitHubStore, keys: list[str]) -> Non
                 m.validate_state(restored)
                 st.write(f"Backup: {len(restored['residents'])} residents, {len(restored['records'])} evidence entries, and {len(restored['reviews'])} reviews.")
                 st.write(f"Current dashboard: {len(state['residents'])} residents, {len(state['records'])} evidence entries, and {len(state['reviews'])} reviews.")
-                st.warning("Restoring replaces the current dashboard. Save a current backup first. Original-file references work only when those encrypted files remain in the same repository and path.")
+                st.warning("Restoring replaces the current dashboard. Save a current backup first. This restores the dashboard records, without copying any older original-file archives.")
                 typed = st.text_input("Type RESTORE to replace the dashboard")
                 kept = st.checkbox("I saved a backup of the current dashboard")
                 if st.button("Restore this backup", disabled=typed != "RESTORE" or not kept):
