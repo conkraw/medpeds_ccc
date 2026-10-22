@@ -891,43 +891,120 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         return
     all_records = [r for p in included for r in p["records"]]
     names = {}
+    name_categories = {}
     for record in all_records:
-        names.setdefault(m.mapping_key(record), record)
-    st.markdown("**Confirm the residents**")
-    st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
+        key = m.mapping_key(record)
+        names.setdefault(key, record)
+        name_categories.setdefault(key, set()).add(record.get("category"))
+    evaluation_categories = {"evaluations", "self_assessments"}
+    has_evaluations = any(categories & evaluation_categories for categories in name_categories.values())
+    st.subheader("Residents in your Administration roster" if has_evaluations else "Confirm the residents")
+    if has_evaluations:
+        st.caption("Your Administration roster selects the residents to include. Unmatched evaluation names are skipped by default. Open the name review sections below if a resident uses a different spelling in the export.")
+    else:
+        st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
+    roster_summary = st.container() if has_evaluations else None
     roster_ids = [r["id"] for r in sorted(state["residents"], key=lambda r: r["name"].casefold())]
     roster_labels = _resident_labels(state["residents"])
     match_batch = hashlib.sha256("|".join(p["source"]["id"] for p in included).encode()).hexdigest()[:16]
     auto_matches = {key: m.match_resident(state, record.get("resident_name", ""), record.get("external_id", ""))
                     for key, record in names.items()}
-    unmatched = sum(value not in roster_ids for value in auto_matches.values())
-    skip_unmatched = st.checkbox("Skip unmatched names for this import", value=False,
-                                 key="skip_unmatched_" + match_batch,
-                                 help="Useful when an export includes residents from other programs. Check unfamiliar spellings before skipping. You can change any individual match below.")
+    roster_names = {m.normalize_name(name) for resident in state["residents"]
+                    for name in [resident["name"], *resident.get("aliases", [])] if m.normalize_name(name)}
+    roster_external_ids = {str(resident.get("external_id", "")).strip() for resident in state["residents"]
+                           if str(resident.get("external_id", "")).strip()}
+    # An ambiguous roster name or conflicting identifier needs a deliberate
+    # choice. In mixed batches, do not silently skip another report category.
+    safe_evaluation_skips = {
+        key for key, record in names.items()
+        if auto_matches[key] not in roster_ids and name_categories[key] <= evaluation_categories
+        and m.normalize_name(record.get("resident_name", "")) not in roster_names
+        and str(record.get("external_id", "")).strip() not in roster_external_ids
+    }
+    unmatched_keys = [key for key in names if auto_matches[key] not in roster_ids]
+    skip_candidates = safe_evaluation_skips if has_evaluations else set(unmatched_keys)
+    skip_unmatched = st.checkbox(
+        "Focus evaluation imports on my Administration roster" if has_evaluations else "Skip unmatched names for this import",
+        value=has_evaluations, key="skip_unmatched_" + match_batch,
+        help=("Automatically include roster matches and skip other evaluation names. You can correct any name below. Ambiguous matches and unmatched names in other report types still need a choice."
+              if has_evaluations else "Useful when an export includes residents from other programs. Check unfamiliar spellings before skipping. You can change any individual match below."),
+    )
     prior_skip = st.session_state.get("skip_unmatched_applied_" + match_batch, False)
     automatic_skips = set(st.session_state.get("automatic_skips_" + match_batch, []))
-    if unmatched:
-        st.caption(f"{unmatched} name{'s' if unmatched != 1 else ''} need a match or an explicit choice to skip.")
-    mappings = {}
+    widget_keys = {}
     for key, record in names.items():
-        auto = auto_matches[key]
-        options = ["__choose__", *roster_ids, "__skip__"]
-        label = str(record.get("resident_name") or "Unnamed resident")
-        if record.get("external_id"):
-            label += " · source ID " + str(record["external_id"])
         widget_key = "map_" + match_batch + "_" + hashlib.sha256(key.encode()).hexdigest()[:16]
-        if skip_unmatched and not prior_skip and auto not in roster_ids and st.session_state.get(widget_key, "__choose__") == "__choose__":
+        widget_keys[key] = widget_key
+        if skip_unmatched and not prior_skip and key in skip_candidates and st.session_state.get(widget_key, "__choose__") == "__choose__":
             st.session_state[widget_key] = "__skip__"
             automatic_skips.add(widget_key)
         elif prior_skip and not skip_unmatched and widget_key in automatic_skips and st.session_state.get(widget_key) == "__skip__":
             st.session_state[widget_key] = "__choose__"
+
+    mappings = {}
+    options = ["__choose__", *roster_ids, "__skip__"]
+
+    def resident_match(key: str) -> None:
+        record = names[key]
+        auto = auto_matches[key]
+        label = str(record.get("resident_name") or "Unnamed resident")
+        if record.get("external_id"):
+            label += " · source ID " + str(record["external_id"])
         mappings[key] = st.selectbox(_escape(label), options, index=options.index(auto) if auto in options else 0,
                                      format_func=lambda x: "Choose a resident" if x == "__choose__" else "Skip these entries" if x == "__skip__" else roster_labels[x],
-                                     key=widget_key)
+                                     key=widget_keys[key])
+
+    if has_evaluations:
+        matched_keys = [key for key in names if auto_matches[key] in roster_ids]
+        if matched_keys:
+            with st.expander("Review roster name matches"):
+                st.caption("These matches are already selected. Change one only if needed.")
+                for key in matched_keys:
+                    resident_match(key)
+        review_keys = [key for key in unmatched_keys if key not in safe_evaluation_skips]
+        if review_keys:
+            st.write("Names that need a match or an explicit choice to skip")
+            st.caption("These names may match your roster, or also appear in another report type. Confirm the resident before including them.")
+            for key in review_keys:
+                resident_match(key)
+        if safe_evaluation_skips:
+            with st.expander(f"Other names in this export ({len(safe_evaluation_skips)})"):
+                st.caption("These names did not match your roster automatically. Leave them skipped, or select the correct roster resident if a name is spelled differently.")
+                for key in unmatched_keys:
+                    if key in safe_evaluation_skips:
+                        resident_match(key)
+    else:
+        if unmatched_keys:
+            st.caption(f"{len(unmatched_keys)} name{'s' if len(unmatched_keys) != 1 else ''} need a match or an explicit choice to skip.")
+        for key in names:
+            resident_match(key)
     st.session_state["skip_unmatched_applied_" + match_batch] = skip_unmatched
     st.session_state["automatic_skips_" + match_batch] = sorted(automatic_skips) if skip_unmatched else []
     skipped_names = sum(value == "__skip__" for value in mappings.values())
-    if skipped_names:
+    if roster_summary is not None:
+        evaluation_counts = Counter()
+        other_counts = Counter()
+        for record in all_records:
+            target = mappings[m.mapping_key(record)]
+            if target in roster_ids:
+                counts = evaluation_counts if record.get("category") in evaluation_categories else other_counts
+                counts[target] += 1
+        selected_ids = [resident_id for resident_id in roster_ids if evaluation_counts[resident_id] or other_counts[resident_id]]
+        with roster_summary:
+            if selected_ids:
+                rows = [{"Resident": roster_labels[resident_id], "Evaluation entries": evaluation_counts[resident_id]}
+                        for resident_id in selected_ids]
+                if other_counts:
+                    for row, resident_id in zip(rows, selected_ids):
+                        row["Other entries"] = other_counts[resident_id]
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+                st.caption("Selected entries for your roster residents, before duplicate checks.")
+            else:
+                st.info("No entries are matched to your Administration roster yet. Check the names below for a spelling difference, or add the resident in Administration and process the files again.")
+            if skipped_names:
+                skipped_entries = sum(mappings[m.mapping_key(record)] == "__skip__" for record in all_records)
+                st.caption(f"{skipped_names} name{'s' if skipped_names != 1 else ''} skipped, covering {skipped_entries} entr{'ies' if skipped_entries != 1 else 'y'}. These entries will not be added to resident dashboards.")
+    elif skipped_names:
         st.caption(f"{skipped_names} name{'s' if skipped_names != 1 else ''} set to skip. Their entries will not be added in this import.")
     if "__choose__" in mappings.values():
         st.warning("Match the remaining names. If a resident is missing, add them under Administration; this preview will remain available.")
