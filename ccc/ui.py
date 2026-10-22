@@ -867,6 +867,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         return
     st.info("Not saved yet. Check the files, resident names, and reporting dates below.")
     included = []
+    entry_previews = []
     for i, preview in enumerate(previews):
         source = preview["source"]
         with st.container(border=True):
@@ -884,8 +885,9 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             if keep:
                 included.append(preview)
             if preview["records"]:
-                with st.expander("Show parsed entries"):
-                    st.dataframe(_evidence_table(preview["records"]), hide_index=True, width="stretch")
+                # Fill this after roster matching so evaluation previews never
+                # expose the other residents in a program-wide source export.
+                entry_previews.append((preview, st.container()))
     if not included:
         st.info("Include at least one readable file to save. You can leave files with errors out of this batch.")
         return
@@ -900,7 +902,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     has_evaluations = any(categories & evaluation_categories for categories in name_categories.values())
     st.subheader("Residents in your Administration roster" if has_evaluations else "Confirm the residents")
     if has_evaluations:
-        st.caption("Your Administration roster selects the residents to include. Unmatched evaluation names are skipped by default. Open the name review sections below if a resident uses a different spelling in the export.")
+        st.caption("Only residents matched to your Administration roster are included. Other evaluation entries are ignored automatically. If a resident uses a different spelling, add it under Other names used in exports in Administration.")
     else:
         st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
     roster_summary = st.container() if has_evaluations else None
@@ -922,26 +924,35 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         and str(record.get("external_id", "")).strip() not in roster_external_ids
     }
     unmatched_keys = [key for key in names if auto_matches[key] not in roster_ids]
-    skip_candidates = safe_evaluation_skips if has_evaluations else set(unmatched_keys)
-    skip_unmatched = st.checkbox(
-        "Focus evaluation imports on my Administration roster" if has_evaluations else "Skip unmatched names for this import",
-        value=has_evaluations, key="skip_unmatched_" + match_batch,
-        help=("Automatically include roster matches and skip other evaluation names. You can correct any name below. Ambiguous matches and unmatched names in other report types still need a choice."
-              if has_evaluations else "Useful when an export includes residents from other programs. Check unfamiliar spellings before skipping. You can change any individual match below."),
-    )
-    prior_skip = st.session_state.get("skip_unmatched_applied_" + match_batch, False)
-    automatic_skips = set(st.session_state.get("automatic_skips_" + match_batch, []))
-    widget_keys = {}
-    for key, record in names.items():
-        widget_key = "map_" + match_batch + "_" + hashlib.sha256(key.encode()).hexdigest()[:16]
-        widget_keys[key] = widget_key
-        if skip_unmatched and not prior_skip and key in skip_candidates and st.session_state.get(widget_key, "__choose__") == "__choose__":
-            st.session_state[widget_key] = "__skip__"
-            automatic_skips.add(widget_key)
-        elif prior_skip and not skip_unmatched and widget_key in automatic_skips and st.session_state.get(widget_key) == "__skip__":
-            st.session_state[widget_key] = "__choose__"
-
+    widget_keys = {key: "map_" + match_batch + "_" + hashlib.sha256(key.encode()).hexdigest()[:16] for key in names}
     mappings = {}
+    if has_evaluations:
+        # Ignore obsolete focus toggles and unresolved hidden widget values.
+        # The exclusion is a rule on every rerun, not a checkbox transition.
+        for prefix in ("skip_unmatched_", "skip_unmatched_applied_", "automatic_skips_"):
+            st.session_state.pop(prefix + match_batch, None)
+        for key in safe_evaluation_skips:
+            previous_match = st.session_state.get(widget_keys[key])
+            if previous_match not in roster_ids:
+                mappings[key] = "__skip__"
+                st.session_state.pop(widget_keys[key], None)
+        # Keep a deliberate roster match from an older unsaved preview. Its
+        # control is still rendered below, so Streamlit retains that choice.
+        matched_keys = [key for key in names if auto_matches[key] in roster_ids
+                        or (key in safe_evaluation_skips and key not in mappings)]
+    else:
+        skip_unmatched = st.checkbox(
+            "Skip unmatched names for this import", value=False, key="skip_unmatched_" + match_batch,
+            help="Useful when an export includes residents from other programs. Check unfamiliar spellings before skipping. You can change any individual match below.",
+        )
+        prior_skip = st.session_state.get("skip_unmatched_applied_" + match_batch, False)
+        automatic_skips = set(st.session_state.get("automatic_skips_" + match_batch, []))
+        for key, widget_key in widget_keys.items():
+            if skip_unmatched and not prior_skip and key in unmatched_keys and st.session_state.get(widget_key, "__choose__") == "__choose__":
+                st.session_state[widget_key] = "__skip__"
+                automatic_skips.add(widget_key)
+            elif prior_skip and not skip_unmatched and widget_key in automatic_skips and st.session_state.get(widget_key) == "__skip__":
+                st.session_state[widget_key] = "__choose__"
     options = ["__choose__", *roster_ids, "__skip__"]
 
     def resident_match(key: str) -> None:
@@ -955,7 +966,6 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                                      key=widget_keys[key])
 
     if has_evaluations:
-        matched_keys = [key for key in names if auto_matches[key] in roster_ids]
         if matched_keys:
             with st.expander("Review roster name matches"):
                 st.caption("These matches are already selected. Change one only if needed.")
@@ -967,19 +977,25 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             st.caption("These names may match your roster, or also appear in another report type. Confirm the resident before including them.")
             for key in review_keys:
                 resident_match(key)
-        if safe_evaluation_skips:
-            with st.expander(f"Other names in this export ({len(safe_evaluation_skips)})"):
-                st.caption("These names did not match your roster automatically. Leave them skipped, or select the correct roster resident if a name is spelled differently.")
-                for key in unmatched_keys:
-                    if key in safe_evaluation_skips:
-                        resident_match(key)
     else:
         if unmatched_keys:
             st.caption(f"{len(unmatched_keys)} name{'s' if len(unmatched_keys) != 1 else ''} need a match or an explicit choice to skip.")
         for key in names:
             resident_match(key)
-    st.session_state["skip_unmatched_applied_" + match_batch] = skip_unmatched
-    st.session_state["automatic_skips_" + match_batch] = sorted(automatic_skips) if skip_unmatched else []
+        st.session_state["skip_unmatched_applied_" + match_batch] = skip_unmatched
+        st.session_state["automatic_skips_" + match_batch] = sorted(automatic_skips) if skip_unmatched else []
+    for preview, container in entry_previews:
+        visible_records = []
+        for record in preview["records"]:
+            key = m.mapping_key(record)
+            if (record.get("category") not in evaluation_categories
+                    or mappings.get(key) in roster_ids
+                    or m.normalize_name(record.get("resident_name", "")) in roster_names
+                    or str(record.get("external_id", "")).strip() in roster_external_ids):
+                visible_records.append(record)
+        if visible_records:
+            with container, st.expander("Show parsed entries"):
+                st.dataframe(_evidence_table(visible_records), hide_index=True, width="stretch")
     skipped_names = sum(value == "__skip__" for value in mappings.values())
     if roster_summary is not None:
         evaluation_counts = Counter()
@@ -1000,7 +1016,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
                 st.caption("Selected entries for your roster residents, before duplicate checks.")
             else:
-                st.info("No entries are matched to your Administration roster yet. Check the names below for a spelling difference, or add the resident in Administration and process the files again.")
+                st.info("No entries are matched to your Administration roster yet. Check the resident names and Other names used in exports in Administration, then process the files again.")
             if skipped_names:
                 skipped_entries = sum(mappings[m.mapping_key(record)] == "__skip__" for record in all_records)
                 st.caption(f"{skipped_names} name{'s' if skipped_names != 1 else ''} skipped, covering {skipped_entries} entr{'ies' if skipped_entries != 1 else 'y'}. These entries will not be added to resident dashboards.")
