@@ -396,6 +396,33 @@ def _annual_fields(row: dict, ctx: _Context, entries: list[dict], target: str, n
                              + _fmt(old["observed_encounters_completed"]) + ".")
 
 
+def _milestone_checkpoint(record: dict, ctx: _Context, entries: list[dict]) -> tuple[int, str, str, str]:
+    """Use the notebook's report period, not a later export/completion date."""
+    source_start, source_end = m.evaluation_source_period(record)
+    if source_start and source_end and source_start > source_end:
+        source_start = source_end = ""
+    observed = source_end or _iso(record.get("date")) or _iso(record.get("period_end"))
+    dated_record = {**record, "date": observed}
+    pgy, academic = _record_year(dated_record, ctx, entries)
+    half_value = _text(record.get("half") or record.get("values", {}).get("half")).casefold()
+    if half_value in {"midyear", "my", "mid-year"}:
+        return pgy, academic, "my", observed
+    if half_value in {"year end", "end of year", "eoy", "end-of-year"}:
+        return pgy, academic, "eoy", observed
+    if source_start and source_end:
+        first, last = date.fromisoformat(source_start), date.fromisoformat(source_end)
+        # These are the three periods recognized by the supplied Step 2
+        # notebooks. Selected upload fallback ranges must not select a slot.
+        if (first.month, last.month) == (7, 12) and first.year == last.year:
+            return pgy, academic, "my", observed
+        if ((first.month, last.month) == (7, 6) and last.year == first.year + 1
+                or (first.month, last.month) == (1, 6) and first.year == last.year):
+            return pgy, academic, "eoy", observed
+    first = _training_year_start(ctx, pgy, observed, entries)
+    half = "my" if observed < m.add_months(first, 6).isoformat() else "eoy"
+    return pgy, academic, half, observed
+
+
 def _milestone_fields(row: dict, ctx: _Context, entries: list[dict], target: str, notes: list[str]) -> None:
     grouped: dict[str, list[tuple[str, str, dict]]] = defaultdict(list)
     current = int(target[1])
@@ -403,20 +430,11 @@ def _milestone_fields(row: dict, ctx: _Context, entries: list[dict], target: str
                for specialty, domains in _MILESTONE_DOMAINS.items()
                for pgy, suffix, _ in word.get_milestone_rows_for_target(target, specialty.lower())
                for domain, count in domains for base in [f"{domain}{i}" for i in range(1, count + 1)]}
-    for record in sorted(ctx.cumulative, key=lambda item: (item.get("date", ""), item.get("id", ""))):
-        specialty = record.get("specialty")
-        if record.get("category") != "milestones" or specialty not in _MILESTONE_DOMAINS:
-            continue
-        pgy, academic = _record_year(record, ctx, entries)
-        observed = _iso(record.get("date")) or _iso(record.get("period_end"))
-        first = _training_year_start(ctx, pgy, observed, entries)
-        half_value = _text(record.get("half") or record.get("values", {}).get("half")).casefold()
-        if half_value in {"midyear", "my", "mid-year"}:
-            half = "my"
-        elif half_value in {"year end", "end of year", "eoy", "end-of-year"}:
-            half = "eoy"
-        else:
-            half = "my" if observed < m.add_months(first, 6).isoformat() else "eoy"
+    milestones = [(_milestone_checkpoint(record, ctx, entries), record) for record in ctx.cumulative
+                  if record.get("category") == "milestones" and record.get("specialty") in _MILESTONE_DOMAINS]
+    for (pgy, academic, half, observed), record in sorted(
+            milestones, key=lambda item: (item[0][3], item[1].get("date", ""), item[1].get("id", ""))):
+        specialty = record["specialty"]
         metric = re.sub(r"[\s_-]+", "", _text(record.get("metric"))).lower()
         metric = re.sub(r"^prof(?=\d)", "pro", metric)
         allowed = {f"{domain}{i}" for domain, count in _MILESTONE_DOMAINS[specialty] for i in range(1, count + 1)}

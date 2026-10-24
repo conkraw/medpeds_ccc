@@ -806,26 +806,32 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             st.caption("This is the history of files that supplied saved entries for your roster. New imports keep the matched entries without storing the original export. Repeated copies appear once, with their most recent save.")
         else:
             st.caption("No saved evaluation files to show.")
+    with st.expander("Milestone reports"):
+        st.caption("Upload the New Innovations milestone PDFs directly, including reports with several residents. The app fills the Medicine and Pediatrics milestone tables in your CCC Word summary.")
+        for specialty, widget, column in zip(("Medicine", "Pediatrics"), ("milestones", "peds_milestones"), st.columns(2)):
+            with column, st.container(border=True):
+                st.subheader(specialty + " milestones")
+                files = st.file_uploader("Add " + specialty + " milestone files",
+                                         type=["pdf", "csv", "xlsx", "xls", "tsv"], accept_multiple_files=True,
+                                         key=f"files_{widget}_{generation}")
+                groups.append(("milestones", files, specialty))
+                st.caption("One file or several. You can also use the all_resident_milestones.csv file from your notebook.")
+        st.caption("Use the report's own dates and training year. An x stays unassessed. Only residents matched to your Administration roster are saved.")
     with st.expander("Self-assessments and other reports"):
         specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
         st.caption("This choice applies to the additional reports below. Choose Combined for a mixed evaluation export or shared administrative reports.")
-        cols = st.columns(4)
+        cols = st.columns(3)
         with cols[0], st.container(border=True):
             st.subheader("Other evaluations")
             kind = st.selectbox("Evaluation report", ["self_assessments", "evaluations"], format_func=lambda x: m.CATEGORIES[x], key="kind_eval")
             files = st.file_uploader("Add self-assessment or mixed evaluation files", type=["csv", "xlsx", "xls", "tab", "tsv"], accept_multiple_files=True, key=f"files_other_eval_{generation}")
             groups.append((kind, files, specialty))
         with cols[1], st.container(border=True):
-            st.subheader("Milestones")
-            files = st.file_uploader("Add milestone files", type=["pdf", "csv", "xlsx", "xls"], accept_multiple_files=True, key=f"files_milestones_{generation}")
-            groups.append(("milestones", files, specialty))
-            st.caption("PDFs with labeled scores, or a spreadsheet export.")
-        with cols[2], st.container(border=True):
             st.subheader("Activities")
             kind = st.selectbox("Activity report", ["procedures", "conferences"], format_func=lambda x: m.CATEGORIES[x], key="kind_activity")
             files = st.file_uploader("Add activity files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_activity_{generation}")
             groups.append((kind, files, specialty))
-        with cols[3], st.container(border=True):
+        with cols[2], st.container(border=True):
             st.subheader("Duty hours")
             kind = st.selectbox("Duty-hour report", ["duty_hours", "duty_violations"], format_func=lambda x: "Shift log" if x == "duty_hours" else "Violation report", key="kind_duty")
             files = st.file_uploader("Add duty-hour files", type=["csv", "xlsx", "xls", "tsv"], accept_multiple_files=True, key=f"files_duty_{generation}")
@@ -850,18 +856,19 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         if count > 100 or sum(f.size for _, files, _ in groups for f in files) > 60 * 1024 * 1024:
             st.error("Add up to 100 files and 60 MB in one batch. Each file can be up to 15 MB. Larger histories can be saved in successive batches.")
             return
-        evaluation_specialties = {}
+        specialty_files = {}
         for kind, specialty, filename, digest in upload_context[2]:
-            if kind != "evaluations":
+            if kind not in {"evaluations", "milestones"}:
                 continue
-            previous_specialty = evaluation_specialties.get(digest)
+            previous_specialty = specialty_files.get((kind, digest))
             if previous_specialty and previous_specialty != specialty:
                 st.session_state.pop("upload_preview", None)
                 st.session_state.pop("upload_preview_context", None)
-                st.error("The same evaluation file was selected for both " + previous_specialty + " and " + specialty
+                label = "evaluation" if kind == "evaluations" else "milestone"
+                st.error("The same " + label + " file was selected for both " + previous_specialty + " and " + specialty
                          + ": " + _escape(filename) + ". Keep the file only in the correct specialty area, then process again.")
                 return
-            evaluation_specialties[digest] = specialty
+            specialty_files[(kind, digest)] = specialty
         previews = []
         parsed_files = {}
         saved_file_keys = {(source.get("sha256"), source.get("kind"), source.get("specialty"))
@@ -897,7 +904,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         preview.pop("data", None)
     if not previews:
         with st.expander("Help choosing an export"):
-            st.write("Use the original New Innovations exports. The app reads CSV, Excel, tab-delimited files, and the HTML-style Excel files used by the older reports. Scanned or unlabeled milestone PDFs need a labeled spreadsheet; they are not assigned scores by position.")
+            st.write("Use the original New Innovations exports. The app reads CSV, Excel, tab-delimited files, and the HTML-style Excel files used by the older reports. The milestone areas accept the New Innovations summary PDFs and your notebook's long CSV output. Scanned PDFs or unrecognized layouts need a labeled spreadsheet.")
             st.caption("Blank compatibility templates are available under Administration. Do not upload the populated REDCap dashboard PDF here.")
         return
     st.subheader("Review before saving")
@@ -989,13 +996,14 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         names.setdefault(key, record)
         name_categories.setdefault(key, set()).add(record.get("category"))
     evaluation_categories = {"evaluations", "self_assessments"}
-    has_evaluations = any(categories & evaluation_categories for categories in name_categories.values())
-    st.subheader("Residents in your Administration roster" if has_evaluations else "Confirm the residents")
-    if has_evaluations:
-        st.caption("Only residents matched to your Administration roster are included. Other evaluation entries are ignored automatically. If a resident uses a different spelling, add it under Other names used in exports in Administration.")
+    roster_categories = evaluation_categories | {"milestones"}
+    has_roster_reports = any(categories & roster_categories for categories in name_categories.values())
+    st.subheader("Residents in your Administration roster" if has_roster_reports else "Confirm the residents")
+    if has_roster_reports:
+        st.caption("Only residents matched to your Administration roster are included. Other evaluation and milestone entries are ignored automatically. If a resident uses a different spelling, add it under Other names used in exports in Administration.")
     else:
         st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
-    roster_summary = st.container() if has_evaluations else None
+    roster_summary = st.container() if has_roster_reports else None
     roster_ids = [r["id"] for r in sorted(state["residents"], key=lambda r: r["name"].casefold())]
     roster_labels = _resident_labels(state["residents"])
     match_batch = hashlib.sha256("|".join(p["source"]["id"] for p in included).encode()).hexdigest()[:16]
@@ -1005,23 +1013,32 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                     for name in [resident["name"], *resident.get("aliases", [])] if m.normalize_name(name)}
     roster_external_ids = {str(resident.get("external_id", "")).strip() for resident in state["residents"]
                            if str(resident.get("external_id", "")).strip()}
+    # Some milestone PDF headers omit spaces within a given name. Surface
+    # those possible roster spellings for review, without assigning by guess.
+    compact_roster_names = {name.replace(" ", "") for name in roster_names}
+    milestone_name_candidates = {
+        key for key, record in names.items()
+        if "milestones" in name_categories[key]
+        and m.normalize_name(record.get("resident_name", "")).replace(" ", "") in compact_roster_names
+    }
     # An ambiguous roster name or conflicting identifier needs a deliberate
     # choice. In mixed batches, do not silently skip another report category.
-    safe_evaluation_skips = {
+    safe_roster_skips = {
         key for key, record in names.items()
-        if auto_matches[key] not in roster_ids and name_categories[key] <= evaluation_categories
+        if auto_matches[key] not in roster_ids and name_categories[key] <= roster_categories
         and m.normalize_name(record.get("resident_name", "")) not in roster_names
         and str(record.get("external_id", "")).strip() not in roster_external_ids
+        and key not in milestone_name_candidates
     }
     unmatched_keys = [key for key in names if auto_matches[key] not in roster_ids]
     widget_keys = {key: "map_" + match_batch + "_" + hashlib.sha256(key.encode()).hexdigest()[:16] for key in names}
     mappings = {}
-    if has_evaluations:
+    if has_roster_reports:
         # Ignore obsolete focus toggles and unresolved hidden widget values.
         # The exclusion is a rule on every rerun, not a checkbox transition.
         for prefix in ("skip_unmatched_", "skip_unmatched_applied_", "automatic_skips_"):
             st.session_state.pop(prefix + match_batch, None)
-        for key in safe_evaluation_skips:
+        for key in safe_roster_skips:
             previous_match = st.session_state.get(widget_keys[key])
             if previous_match not in roster_ids:
                 mappings[key] = "__skip__"
@@ -1029,7 +1046,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         # Keep a deliberate roster match from an older unsaved preview. Its
         # control is still rendered below, so Streamlit retains that choice.
         matched_keys = [key for key in names if auto_matches[key] in roster_ids
-                        or (key in safe_evaluation_skips and key not in mappings)]
+                        or (key in safe_roster_skips and key not in mappings)]
     else:
         skip_unmatched = st.checkbox(
             "Skip unmatched names for this import", value=False, key="skip_unmatched_" + match_batch,
@@ -1055,13 +1072,13 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                                      format_func=lambda x: "Choose a resident" if x == "__choose__" else "Skip these entries" if x == "__skip__" else roster_labels[x],
                                      key=widget_keys[key])
 
-    if has_evaluations:
+    if has_roster_reports:
         if matched_keys:
             with st.expander("Review roster name matches"):
                 st.caption("These matches are already selected. Change one only if needed.")
                 for key in matched_keys:
                     resident_match(key)
-        review_keys = [key for key in unmatched_keys if key not in safe_evaluation_skips]
+        review_keys = [key for key in unmatched_keys if key not in safe_roster_skips]
         if review_keys:
             st.write("Names that need a match or an explicit choice to skip")
             st.caption("These names may match your roster, or also appear in another report type. Confirm the resident before including them.")
@@ -1077,20 +1094,24 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     skipped_names = sum(value == "__skip__" for value in mappings.values())
     if roster_summary is not None:
         evaluation_counts = Counter()
+        milestone_counts = Counter()
         other_counts = Counter()
         for record in all_records:
             target = mappings[m.mapping_key(record)]
             if target in roster_ids:
-                counts = evaluation_counts if record.get("category") in evaluation_categories else other_counts
+                counts = (evaluation_counts if record.get("category") in evaluation_categories
+                          else milestone_counts if record.get("category") == "milestones" else other_counts)
                 counts[target] += 1
-        selected_ids = [resident_id for resident_id in roster_ids if evaluation_counts[resident_id] or other_counts[resident_id]]
+        selected_ids = [resident_id for resident_id in roster_ids
+                        if evaluation_counts[resident_id] or milestone_counts[resident_id] or other_counts[resident_id]]
         with roster_summary:
             if selected_ids:
-                rows = [{"Resident": roster_labels[resident_id], "Evaluation entries": evaluation_counts[resident_id]}
-                        for resident_id in selected_ids]
-                if other_counts:
-                    for row, resident_id in zip(rows, selected_ids):
-                        row["Other entries"] = other_counts[resident_id]
+                rows = [{"Resident": roster_labels[resident_id]} for resident_id in selected_ids]
+                for counts, label in ((evaluation_counts, "Evaluation entries"), (milestone_counts, "Milestone scores"),
+                                      (other_counts, "Other entries")):
+                    if counts:
+                        for row, resident_id in zip(rows, selected_ids):
+                            row[label] = counts[resident_id]
                 st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
                 st.caption("Selected entries for your roster residents, before duplicate checks.")
             else:

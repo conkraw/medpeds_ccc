@@ -481,6 +481,11 @@ def _canonical(record: dict, *, identity_only: bool = False) -> dict:
     if record.get("external_record_id"):
         keys.append("external_record_id")
     result = {k: record.get(k) for k in keys}
+    if record.get("category") == "milestones" and isinstance(result.get("values"), dict):
+        # The canonical metric identifies the milestone. PDF header spacing
+        # and notebook CSV labels are provenance, not another assessment.
+        # Keep the original values dictionary unchanged in saved evidence.
+        result["values"] = {key: value for key, value in result["values"].items() if key != "source_label"}
     if record.get("category") in {"evaluations", "self_assessments"}:
         # Two evaluations completed on one day may cover different rotations.
         # Preserve that distinction while ignoring a later upload's fallback

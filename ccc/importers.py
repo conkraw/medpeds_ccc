@@ -716,6 +716,158 @@ def _read_pdf_pages(data: bytes) -> list[str]:
         return pages
 
 
+_NI_MILESTONE_HEADING = r"Program\s*Subcompetency\s*for\s*Residents"
+_PDF_MILESTONE_GROUPS = {
+    "Medicine": (("PC", 6), ("MK", 3), ("SBP", 3), ("PBLI", 2), ("PROF", 4), ("ICS", 3)),
+    "Pediatrics": (("PC", 5), ("MK", 2), ("SBP", 6), ("PBLI", 2), ("PROF", 4), ("ICS", 3)),
+}
+
+
+def _read_pdf_milestone_tables(data: bytes) -> list[dict]:
+    """Read bounded, labeled table cells without retaining the PDF itself.
+
+    The New Innovations report places each domain in its own small grid. Its
+    wrapped headers and lower PC/SBP rows are interleaved by ordinary PDF text
+    extraction, so a final list of numbers cannot identify the right scores.
+    """
+    import pdfplumber
+    pages, text_length, row_count = [], 0, 0
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        if len(pdf.pages) > MAX_PDF_PAGES:
+            raise ValueError(f"The PDF contains more than {MAX_PDF_PAGES} pages. Upload smaller reports.")
+        for number, page in enumerate(pdf.pages, 1):
+            # Preserve the spaces in the resident's printed name. The report's
+            # tiny milestone font otherwise causes pdfplumber to join words.
+            text = page.extract_text(x_tolerance=1, y_tolerance=2) or ""
+            text_length += len(text)
+            if text_length > MAX_PDF_TEXT:
+                raise ValueError("The PDF contains too much extracted text; upload smaller reports.")
+            tables = page.find_tables() if re.search(_NI_MILESTONE_HEADING, text, re.I) else []
+            if len(tables) > MAX_SHEETS:
+                raise ValueError("The PDF contains too many tables on one page. Export smaller milestone reports.")
+            extracted = []
+            for table in tables:
+                rows = table.extract(x_tolerance=1, y_tolerance=2)
+                row_count += len(rows)
+                if row_count > MAX_ROWS or any(len(row) > MAX_COLUMNS for row in rows):
+                    raise ValueError("The PDF milestone tables exceed the supported row or column limit.")
+                extracted.append(rows)
+            pages.append({"page_number": number, "text": text, "tables": extracted})
+    return pages
+
+
+def _parse_pdf_milestone_tables(data: bytes, specialty: str, start: str, end: str, result: ParseResult) -> None:
+    """Match explicit milestone header cells to the score cells beneath them."""
+    expected = [f"{domain}{number}" for domain, count in _PDF_MILESTONE_GROUPS[specialty]
+                for number in range(1, count + 1)]
+    expected_codes = set(expected)
+    found, seen = [], {}
+    duplicate_pages = 0
+    for page in _read_pdf_milestone_tables(data):
+        page_num, text = page["page_number"], page["text"]
+        if not text.strip():
+            result.errors.append(f"PDF page {page_num}: no selectable milestone text was found. Re-export this page as a text-based PDF or remove a genuinely blank page before importing.")
+            return
+        sections = list(re.finditer(_NI_MILESTONE_HEADING, text, re.I))
+        if len(sections) != 1:
+            result.errors.append(f"PDF page {page_num}: expected one resident's Program Subcompetency milestone section. Export one assessment per page.")
+            return
+        section = text[sections[0].start():]
+        detected = []
+        if re.search(r"Internal\s*Medicine\s*Milestones", section, re.I):
+            detected.append("Medicine")
+        if re.search(r"Pediatrics?\s*Milestones", section, re.I):
+            detected.append("Pediatrics")
+        if detected != [specialty]:
+            result.errors.append(f"PDF page {page_num}: the milestone report does not match the selected {specialty} specialty. Use the matching upload area.")
+            return
+        header = text[:sections[0].start()]
+        ranges = list(re.finditer(rf"({_DATE_TOKEN})\s*(?:-|–|—|to)\s*({_DATE_TOKEN})", header, re.I))
+        if len(ranges) != 1:
+            result.errors.append(f"PDF page {page_num}: a single resident report date range is required above the milestone table.")
+            return
+        report_range = ranges[0]
+        period_start, period_end = _date(report_range.group(1)), _date(report_range.group(2))
+        if not period_start or not period_end or period_start > period_end:
+            result.errors.append(f"PDF page {page_num}: the printed milestone report dates are invalid or reversed.")
+            return
+        names = _unique_text(re.findall(r"^\s*(?:Resident(?:\s+Name)?|Subject(?:\s+Name)?|Name)\s*:\s*(.+)$",
+                                       header[:report_range.start()], re.I | re.M))
+        previous = [line.strip() for line in header[:report_range.start()].splitlines() if line.strip()]
+        name = names[0] if len(names) == 1 else previous[-1] if not names and previous else ""
+        if not name or re.search(r"\d|Training\s*Year|Program\s*Subcompetency", name, re.I):
+            result.errors.append(f"PDF page {page_num}: a resident name could not be reliably read above the date range. Use a structured milestone CSV for this page.")
+            return
+        # Rotation names can contain '(PGY4)' even when the resident is PGY1.
+        # Read only the training-year row inside the milestone section.
+        years = {int(value) for value in re.findall(r"\b([1-4])(?:st|nd|rd|th)\s*Year\s*in\s*Residency", section, re.I)}
+        if len(years) != 1:
+            result.errors.append(f"PDF page {page_num}: one training year from PGY1 through PGY4 is required in the milestone table.")
+            return
+        pgy = years.pop()
+        scores = {}
+        for table_num, rows in enumerate(page["tables"], 1):
+            for row_num, row in enumerate(rows):
+                for column, cell in enumerate(row):
+                    label = " ".join(_text(cell).split())
+                    if not re.fullmatch(r"(?:PC|MK|SBP|PBLI|PROF?)\s*[-_ ]?\s*\d+|ICS\s*[-_ ]?\s*\d+", label, re.I):
+                        continue
+                    code = _milestone_code(label)
+                    if code not in expected_codes or code in scores:
+                        result.errors.append(f"PDF page {page_num}: the table has an unexpected or repeated milestone label ({code}). Check the selected specialty and export one assessment per page.")
+                        return
+                    # A None cell is the structural gap created by another
+                    # domain's taller header. An empty real cell is not a score.
+                    next_cells = [(index, candidate[column]) for index, candidate in enumerate(rows[row_num + 1:], row_num + 1)
+                                  if column < len(candidate) and candidate[column] is not None]
+                    value_row, supplied = next_cells[0] if next_cells else (-1, "")
+                    try:
+                        if not _text(supplied):
+                            raise ValueError("blank score")
+                        value, status = _score(supplied)
+                    except ValueError:
+                        result.errors.append(f"PDF page {page_num}: {code} has no single valid score directly below its label. Use the original report or a structured CSV to correct this cell.")
+                        return
+                    scores[code] = (value, status, label, _text(supplied), table_num, row_num + 1, value_row + 1, column + 1)
+        if set(scores) != expected_codes:
+            result.errors.append(f"PDF page {page_num}: found {len(scores)} labeled milestone scores; the {specialty} report requires {len(expected)}. Re-export the complete table or use the structured milestone CSV.")
+            return
+        report_dates = f"{report_range.group(1)} - {report_range.group(2)}"
+        records = []
+        for code in expected:
+            value, status, label, supplied, table_num, label_row, value_row, column = scores[code]
+            row = {_key("resident_name"): name, _key("training_year"): f"PGY{pgy}",
+                   _key("report_dates"): report_dates, _key("milestone"): label, _key("value"): supplied}
+            table = _Table("PDF", {key: key for key in row}, [])
+            record = _base(table, value_row, row, "milestones", specialty, result)
+            record.update(metric=code, value=value, unit="milestone level", form="Milestone assessment",
+                          record_mode="snapshot", pgy=pgy, source_period_start=period_start,
+                          source_period_end=period_end,
+                          source_locator=f"PDF page {page_num}, table {table_num}, label row {label_row}, score row {value_row}, column {column}")
+            record["values"] = {"assessment_status": status, "source_label": label}
+            record["resident_name_requires_confirmation"] = not bool(names)
+            _dates(record, row, start, end, snapshot=True)
+            key = (name.casefold(), period_start, period_end, pgy, code)
+            score = (value, status.casefold())
+            if key in seen:
+                if seen[key] != score:
+                    result.errors.append("The PDF contains conflicting scores for the same resident and reporting period. Export the intended assessment before saving.")
+                    return
+            else:
+                seen[key] = score
+                records.append(record)
+        if not records:
+            duplicate_pages += 1
+        found.extend(records)
+    if not found:
+        result.errors.append("No complete New Innovations milestone tables were found in this PDF.")
+        return
+    if duplicate_pages:
+        result.warnings.append(f"Skipped {duplicate_pages} repeated milestone report page(s) within this file.")
+    result.records.extend(found)
+    result.profile = "New Innovations milestone grid PDF"
+
+
 def _parse_pdf(data: bytes, kind: str, specialty: str, start: str, end: str, result: ParseResult) -> None:
     if kind != "milestones":
         result.errors.append("This PDF report type cannot yet be imported reliably. Upload the corresponding New Innovations Excel, CSV, or TAB export. PDFs with explicit milestone codes and scores are supported in Milestones.")
@@ -727,6 +879,9 @@ def _parse_pdf(data: bytes, kind: str, specialty: str, start: str, end: str, res
     text = "\n".join(pages)
     if not text.strip():
         result.errors.append("This PDF has no selectable text. Upload a text-based PDF or a structured milestone CSV; scanned pages need review and transcription.")
+        return
+    if re.search(_NI_MILESTONE_HEADING, text, re.I):
+        _parse_pdf_milestone_tables(data, specialty, start, end, result)
         return
     names = _unique_text(re.findall(r"^\s*(?:Resident(?:\s+Name)?|Subject(?:\s+Name)?|Name)\s*:\s*(.+)$", text, re.I | re.M))
     if len(names) > 1:
