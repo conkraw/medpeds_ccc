@@ -14,7 +14,7 @@ import math
 import re
 import unicodedata
 import uuid
-from collections import Counter
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -354,11 +354,14 @@ def checkpoint_defaults(resident: dict, pgy: int, half: str) -> dict:
 
 def record_in_window(record: dict, start: Any, end: Any) -> bool:
     low, high = parse_date(start), parse_date(end)
-    observed = parse_date(record.get("date")) or parse_date(record.get("period_end"))
+    milestone_period = milestone_snapshot_period(record)
+    observed = (parse_date(milestone_period[1]) if milestone_period else
+                parse_date(record.get("date")) or parse_date(record.get("period_end")))
     if not low or not high or not observed or low > high or not low <= observed <= high:
         return False
     if record.get("record_mode") == "snapshot":
-        first, last = parse_date(record.get("period_start")), parse_date(record.get("period_end"))
+        first, last = (tuple(parse_date(value) for value in milestone_period) if milestone_period else
+                       (parse_date(record.get("period_start")), parse_date(record.get("period_end"))))
         if first and first < low:
             return False
         if last and (last > high or (first and last < first)):
@@ -438,6 +441,51 @@ def evaluation_source_period(record: dict) -> tuple[str, str]:
     return result[0], result[1]
 
 
+def _milestone_grid_source_period(record: dict) -> tuple[str, str] | None:
+    """Identify only the explicit cells emitted by the NI grid importer."""
+    if (record.get("category") != "milestones"
+            or record.get("specialty") not in ("Medicine", "Pediatrics")
+            or record.get("record_mode") != "snapshot"
+            or record.get("form") != "Milestone assessment"
+            or record.get("date_source") != "source period end"
+            or not re.fullmatch(r"PDF page \d+, table \d+, label row \d+, score row \d+, column \d+",
+                                str(record.get("source_locator", "")))):
+        return None
+    first, last = evaluation_source_period(record)
+    if (not first or not last or first > last
+            or source_export_date(record.get("period_start")) != first
+            or source_export_date(record.get("period_end")) != last
+            or source_export_date(record.get("date")) != last):
+        return None
+    return first, last
+
+
+def milestone_snapshot_period(record: dict) -> tuple[str, str] | None:
+    """Return the covered interval for a known NI milestone grid snapshot.
+
+    New Innovations can print a full training-year date range while the scores
+    only reflect the day the report was produced. Keep that original range in
+    saved evidence and fingerprints, but use its printed report date to decide
+    when the snapshot was available. Older grid imports have no printed report
+    date; an import timestamp inside that same source period proves only that
+    the scores were available by that later day. Other report formats and
+    malformed metadata retain the ordinary snapshot rules.
+    """
+    source_period = _milestone_grid_source_period(record)
+    if source_period is None:
+        return None
+    first, last = source_period
+    if "source_report_date" in record:
+        observed = source_export_date(record["source_report_date"])
+        if not observed or observed < first:
+            return None
+    else:
+        observed = source_export_date(record.get("imported_at"))
+        if not first <= observed <= last:
+            return None
+    return first, min(last, observed)
+
+
 def _canonical_question(question: Any) -> Any:
     """Ignore conversion-only rating spelling without changing saved evidence."""
     if not isinstance(question, dict):
@@ -514,12 +562,62 @@ def mapping_key(record: dict) -> str:
     return json.dumps([str(record.get("resident_name", "")).strip(), str(record.get("external_id", "")).strip()], ensure_ascii=False)
 
 
+def _milestone_comparison_bucket(record: dict) -> str:
+    """Distinguish actual MY scores inside an otherwise EOY annual range.
+
+    The original fingerprint remains stable for saved archives and equivalent
+    historical CSV/PDF exports. Only a known annual grid's MY snapshot needs
+    another comparison bucket, so the same score can be recorded again at EOY.
+    """
+    period = milestone_snapshot_period(record)
+    if period is None:
+        return ""
+    first, last = _milestone_grid_source_period(record)
+    if not (first[5:7] == "07" and last[5:7] == "06" and int(last[:4]) == int(first[:4]) + 1):
+        return ""
+    values = record.get("values") if isinstance(record.get("values"), dict) else {}
+    half = str(record.get("half") or values.get("half") or "").strip().casefold()
+    if half in {"year end", "end of year", "eoy", "end-of-year"}:
+        return ""
+    if half in {"midyear", "my", "mid-year"} or period[1] < f"{last[:4]}-01-01":
+        return "annual-grid-midyear"
+    return ""
+
+
+def _milestone_file_fingerprint(record: dict, fingerprint: str) -> tuple[str, str] | None:
+    digest = record.get("file_sha256")
+    if (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+            and _milestone_grid_source_period(record) is not None):
+        return digest, fingerprint
+    return None
+
+
 def prepare_records(state: dict, records: list[dict], mappings: dict[str, str]) -> tuple[list[dict], dict]:
     prepared = []
     resident_ids = {r["id"] for r in state["residents"]}
     saved = active_records(state)
-    fingerprints = Counter(record_fingerprint(r) for r in saved)
-    identities = {record_fingerprint(r, identity_only=True) for r in saved}
+    fingerprints: dict[tuple[str, str], list[int]] = defaultdict(list)
+    same_files: dict[tuple[str, str], list[int]] = defaultdict(list)
+    identities = set()
+    for index, record in enumerate(saved):
+        fingerprint = record_fingerprint(record)
+        bucket = _milestone_comparison_bucket(record)
+        fingerprints[(fingerprint, bucket)].append(index)
+        identities.add((record_fingerprint(record, identity_only=True), bucket))
+        file_key = _milestone_file_fingerprint(record, fingerprint)
+        if file_key is not None:
+            same_files[file_key].append(index)
+    consumed = set()
+
+    def consume_duplicate(candidates: list[int]) -> bool:
+        # The two indexes share one pool of saved rows. A legacy same-file
+        # match must not consume a second copy through its checkpoint bucket.
+        while candidates and candidates[-1] in consumed:
+            candidates.pop()
+        if not candidates:
+            return False
+        consumed.add(candidates.pop())
+        return True
     native_seen = {}
     exact_duplicates = possible_updates = 0
     for item in records:
@@ -540,6 +638,7 @@ def prepare_records(state: dict, records: list[dict], mappings: dict[str, str]) 
         if rec.get("period_start") and rec.get("period_end") and rec["period_start"] > rec["period_end"]:
             raise ValidationError("An evidence reporting period starts after it ends.")
         fp = record_fingerprint(rec)
+        bucket = _milestone_comparison_bucket(rec)
         native = record_fingerprint(rec, identity_only=True) if rec.get("external_record_id") else None
         if native and native in native_seen:
             if native_seen[native] == fp:
@@ -548,11 +647,12 @@ def prepare_records(state: dict, records: list[dict], mappings: dict[str, str]) 
             raise ValidationError("An upload contains conflicting entries for the same New Innovations event ID. Correct the file before importing.")
         if native:
             native_seen[native] = fp
-        if fingerprints[fp] > 0:
+        file_key = _milestone_file_fingerprint(rec, fp)
+        if ((file_key is not None and consume_duplicate(same_files[file_key]))
+                or consume_duplicate(fingerprints[(fp, bucket)])):
             exact_duplicates += 1
-            fingerprints[fp] -= 1
             continue
-        identity = record_fingerprint(rec, identity_only=True)
+        identity = (record_fingerprint(rec, identity_only=True), bucket)
         if identity in identities:
             possible_updates += 1
             rec["possible_revision"] = True

@@ -791,6 +791,19 @@ def _parse_pdf_milestone_tables(data: bytes, specialty: str, start: str, end: st
         if not period_start or not period_end or period_start > period_end:
             result.errors.append(f"PDF page {page_num}: the printed milestone report dates are invalid or reversed.")
             return
+        # The selected report window may extend to the coming June even when
+        # this snapshot was exported in October. Keep the configured window
+        # intact and retain the printed generation date separately so report
+        # filtering can use the evidence actually available on that date.
+        printed_dates = re.findall(rf"New\s*Innovations\s*({_DATE_TOKEN})(?![\d/])", section, re.I)
+        report_dates = {_date(value) for value in printed_dates}
+        if "" in report_dates or len(report_dates) > 1:
+            result.errors.append(f"PDF page {page_num}: the printed report generation date is invalid or ambiguous. Re-export this milestone report before importing.")
+            return
+        report_date = next(iter(report_dates), "")
+        if report_date and report_date < period_start:
+            result.errors.append(f"PDF page {page_num}: the printed report generation date is before the selected reporting period. Check the dates in New Innovations and re-export the report.")
+            return
         names = _unique_text(re.findall(r"^\s*(?:Resident(?:\s+Name)?|Subject(?:\s+Name)?|Name)\s*:\s*(.+)$",
                                        header[:report_range.start()], re.I | re.M))
         previous = [line.strip() for line in header[:report_range.start()].splitlines() if line.strip()]
@@ -845,6 +858,8 @@ def _parse_pdf_milestone_tables(data: bytes, specialty: str, start: str, end: st
                           source_period_end=period_end,
                           source_locator=f"PDF page {page_num}, table {table_num}, label row {label_row}, score row {value_row}, column {column}")
             record["values"] = {"assessment_status": status, "source_label": label}
+            if report_date:
+                record["source_report_date"] = report_date
             record["resident_name_requires_confirmation"] = not bool(names)
             _dates(record, row, start, end, snapshot=True)
             key = (name.casefold(), period_start, period_end, pgy, code)

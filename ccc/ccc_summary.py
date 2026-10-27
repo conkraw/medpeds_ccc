@@ -401,7 +401,9 @@ def _milestone_checkpoint(record: dict, ctx: _Context, entries: list[dict]) -> t
     source_start, source_end = m.evaluation_source_period(record)
     if source_start and source_end and source_start > source_end:
         source_start = source_end = ""
-    observed = source_end or _iso(record.get("date")) or _iso(record.get("period_end"))
+    covered_period = m.milestone_snapshot_period(record)
+    observed = (covered_period[1] if covered_period else
+                source_end or _iso(record.get("date")) or _iso(record.get("period_end")))
     dated_record = {**record, "date": observed}
     pgy, academic = _record_year(dated_record, ctx, entries)
     half_value = _text(record.get("half") or record.get("values", {}).get("half")).casefold()
@@ -411,6 +413,13 @@ def _milestone_checkpoint(record: dict, ctx: _Context, entries: list[dict]) -> t
         return pgy, academic, "eoy", observed
     if source_start and source_end:
         first, last = date.fromisoformat(source_start), date.fromisoformat(source_end)
+        if covered_period and observed < source_end:
+            # A report printed before its configured annual end contains
+            # scores through its actual as-of date, not future EOY scores.
+            if (first.month, last.month) == (7, 6) and last.year == first.year + 1:
+                half = "my" if observed < f"{last.year}-01-01" else "eoy"
+                return pgy, academic, half, observed
+            last = date.fromisoformat(observed)
         # These are the three periods recognized by the supplied Step 2
         # notebooks. Selected upload fallback ranges must not select a slot.
         if (first.month, last.month) == (7, 12) and first.year == last.year:
