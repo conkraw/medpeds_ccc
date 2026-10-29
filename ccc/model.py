@@ -222,6 +222,8 @@ def validate_state(state: Any) -> dict:
         _validate_cumulative_snapshots(r, r["resident_id"])
     from ccc.annual import validate_state_progress
     validate_state_progress(state)
+    from ccc.evaluation_flags import validate_state_flags
+    validate_state_flags(state)
     try:
         json.dumps(state, allow_nan=False)
     except (ValueError, TypeError):
@@ -317,6 +319,10 @@ def remove_resident(state: dict, resident_id: str, actor: str) -> dict:
     result["residents"] = [r for r in result["residents"] if r["id"] != resident_id]
     result["records"] = [r for r in result["records"] if r["resident_id"] != resident_id]
     result["reviews"] = [r for r in result["reviews"] if r["resident_id"] != resident_id]
+    if "evaluation_comment_selections" in result:
+        result["evaluation_comment_selections"] = [
+            row for row in result["evaluation_comment_selections"] if row["resident_id"] != resident_id
+        ]
     annual_removed = 0
     if "annual_progress" in result:
         result["annual_progress"] = [r for r in result["annual_progress"] if r["resident_id"] != resident_id]
@@ -790,11 +796,14 @@ def save_review(state: dict, resident_id: str, data: dict, actor: str, *, finali
     item["status"] = "Final" if finalize else "Draft"
     if finalize:
         from ccc.annual import progress_for
+        from ccc.evaluation_flags import selected_for_report
         item["snapshot"] = copy.deepcopy(records_for(result, resident_id, item["period_start"], item["period_end"]))
         item["snapshot_resident"] = copy.deepcopy(resident_by_id(result, resident_id))
         item["cumulative_evidence_snapshot"] = copy.deepcopy(records_for(
             result, resident_id, item["snapshot_resident"]["start_date"], item["period_end"]))
         item["annual_progress_snapshot"] = progress_for(result, resident_id, item["period_end"])
+        item["evaluation_comment_snapshot"] = selected_for_report(
+            result, resident_id, item["period_start"], item["period_end"])
         item["excluded_coverage_count"] = len(coverage_exclusions(result, resident_id, item["period_start"], item["period_end"]))
         item["finalized_at"] = now_iso()
         item["finalized_by"] = actor
@@ -823,6 +832,7 @@ def reopen_review(state: dict, review_id: str, actor: str, reason: str) -> dict:
     review.pop("snapshot", None)
     review.pop("cumulative_evidence_snapshot", None)
     review.pop("annual_progress_snapshot", None)
+    review.pop("evaluation_comment_snapshot", None)
     return with_audit(result, actor, "Review reopened", review_id=review_id, reason=reason.strip())
 
 

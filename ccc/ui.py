@@ -195,12 +195,12 @@ def _clear_removed_resident_state(removed_ids: set[str]) -> None:
     """Discard selections and previews that can refer to a removed resident."""
     _reset_uploads()
     for key in list(st.session_state):
-        if key in {"selected_resident", "resident_page_picker", "export_resident", "roster_selection", "yearly_progress_resident"}:
+        if key in {"selected_resident", "resident_page_picker", "export_resident", "roster_selection", "yearly_progress_resident", "evaluation_flagger_resident"}:
             if st.session_state[key] in removed_ids:
                 st.session_state.pop(key, None)
         elif key.startswith(("map_", "replace_", "include_")):
             st.session_state.pop(key, None)
-        elif key.startswith(("review_", "confirm_remove_", "annual_", "export_range_")) and any(rid in key for rid in removed_ids):
+        elif key.startswith(("review_", "confirm_remove_", "annual_", "export_range_", "evaluation_flagger_", "flag_comment_")) and any(rid in key for rid in removed_ids):
             st.session_state.pop(key, None)
 
 
@@ -476,6 +476,154 @@ def _show_evidence(state: dict, resident: dict, records: list[dict], start: str,
             st.dataframe(_evidence_table(excluded), hide_index=True, width="stretch")
 
 
+def _evaluation_flagger_page(state: dict, store: GitHubStore | None) -> None:
+    from ccc import evaluation_flags as flags
+
+    st.header("Evaluation flagger")
+    st.write("Review low ratings, then choose the written comments to include on a separate CCC report page.")
+    can_configure = _permission("manage") and store is not None
+    can_select = _permission("review") and store is not None
+    pending = bool(st.session_state.get("pending_save"))
+    config = flags.get_config(state)
+    config_token = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:12]
+    with st.expander("Flagging settings", expanded=not state.get("settings", {}).get("evaluation_flagger")):
+        st.caption("A rating at or below its cutoff is flagged. These settings apply to every resident.")
+        with st.form("evaluation_flagger_settings_" + config_token):
+            first, second = st.columns(2)
+            with first:
+                competency_enabled = st.checkbox("Flag competency / other ratings", value=config["competency_enabled"],
+                                                 disabled=not can_configure or pending)
+                competency_threshold = st.number_input("Competency / other rating cutoff", min_value=0.0, max_value=100.0,
+                                                       value=float(config["competency_threshold"]), step=0.5,
+                                                       disabled=not can_configure or pending)
+            with second:
+                epa_enabled = st.checkbox("Flag EPA ratings", value=config["epa_enabled"], disabled=not can_configure or pending)
+                epa_threshold = st.number_input("EPA rating cutoff", min_value=0.0, max_value=100.0,
+                                                value=float(config["epa_threshold"]), step=0.5,
+                                                disabled=not can_configure or pending)
+            st.caption("Other ratings includes numeric evaluation responses that are not identified as EPA ratings. Missing scores and administrative counts are ignored.")
+            save_settings = st.form_submit_button("Save flagging settings", disabled=not can_configure or pending)
+        if not can_configure and not st.session_state.get("demo"):
+            st.caption("An administrator can change the flagging settings.")
+        if save_settings:
+            try:
+                candidate = flags.save_config(state, {
+                    "competency_enabled": competency_enabled, "competency_threshold": competency_threshold,
+                    "epa_enabled": epa_enabled, "epa_threshold": epa_threshold,
+                }, _actor())
+                if _persist(candidate, store, "Flagging settings saved."):
+                    st.rerun()
+            except m.ValidationError as exc:
+                st.error(str(exc))
+
+    resident = _pick_resident(state, "evaluation_flagger_resident")
+    if resident is None:
+        return
+    rid = resident["id"]
+    start, end = _range_controls(state, prefix=f"evaluation_flagger_range_{rid}",
+                                 default_start=m.parse_date(resident["start_date"]))
+    entries = flags.review_evaluations(state, rid, start, end)
+    saved_keys = sorted((row["record_id"], row["comment_key"]) for row in state.get("evaluation_comment_selections", [])
+                        if row["resident_id"] == rid)
+    selection_token = hashlib.sha256(json.dumps(saved_keys).encode()).hexdigest()[:16]
+    draft_key = "evaluation_flagger_draft_" + rid
+    draft = st.session_state.get(draft_key)
+    if not isinstance(draft, dict) or draft.get("saved_token") != selection_token:
+        draft = {"saved_token": selection_token, "choices": {}, "generation": m.new_id()}
+        st.session_state[draft_key] = draft
+    saved_by_record: dict[str, set[str]] = {}
+    for record_id, comment_key in saved_keys:
+        saved_by_record.setdefault(record_id, set()).add(comment_key)
+
+    one, two = st.columns([2, 1])
+    with one:
+        view = st.radio("Show evaluations", ["Flagged evaluations", "All evaluations", "Selected comments"],
+                        horizontal=True, key="evaluation_flagger_view_" + rid)
+    with two:
+        specialty = st.radio("Specialty", ["All", "Medicine", "Pediatrics"], horizontal=True,
+                             key="evaluation_flagger_specialty_" + rid)
+    filtered = [entry for entry in entries if specialty == "All" or entry["specialty"] == specialty]
+    if view == "Flagged evaluations":
+        filtered = [entry for entry in filtered if entry["flagged"]]
+    elif view == "Selected comments":
+        filtered = [entry for entry in filtered if any(comment["selected"] for comment in entry["comments"])
+                    or draft["choices"].get(entry["record_id"])]
+    flagged_count = sum(entry["flagged"] for entry in entries)
+    selected_count = sum(comment["selected"] for entry in entries for comment in entry["comments"])
+    st.caption(f"{flagged_count} flagged evaluations and {selected_count} saved comments in this date range.")
+    st.caption("Only comments you select and save appear on the added page. It contains a Medicine or Pediatric designation, evaluator, and comment, without ratings or question wording.")
+    if not can_select:
+        st.info("Sign in with an administrator or reviewer account to save comment selections." if not st.session_state.get("demo")
+                else "This preview shows the review screen. Saving is unavailable.")
+    if not filtered:
+        st.info("No evaluations match this view. Choose All evaluations or adjust the specialty and dates.")
+
+    page_size = 20
+    page_count = max(1, math.ceil(len(filtered) / page_size))
+    page_context = hashlib.sha256(json.dumps([start, end, specialty, view, [entry["record_id"] for entry in filtered]]).encode()).hexdigest()[:12]
+    page_key = f"evaluation_flagger_page_{rid}_{page_context}"
+    page = st.session_state.get(page_key, 1)
+    if page_count > 1:
+        page = st.selectbox("Evaluation page", list(range(1, page_count + 1)), key=page_key,
+                            format_func=lambda value: f"Page {value} of {page_count}")
+    visible = filtered[(page - 1) * page_size:page * page_size]
+    for entry in visible:
+        record_id = entry["record_id"]
+        heading = f"{entry['date']} | {entry['specialty']} | {entry.get('rotation') or 'Evaluation'}"
+        with st.expander(_escape(heading), expanded=len(visible) <= 5):
+            st.text("Evaluator: " + (entry.get("evaluator") or "Not shown"))
+            if entry.get("form"):
+                st.caption(_escape(entry["form"]))
+            if entry["flags"]:
+                st.dataframe(pd.DataFrame([{
+                    "Rating type": item["kind"], "Item": item["prompt"], "Score": item["score"],
+                    "Flag at or below": item["threshold"],
+                } for item in entry["flags"]]), hide_index=True, width="stretch")
+            else:
+                st.caption("No rating meets the current cutoff.")
+            if not entry["comments"]:
+                st.caption("This evaluation has no written comment to select.")
+                continue
+            chosen = set(draft["choices"].get(record_id, saved_by_record.get(record_id, set())))
+            for number, comment in enumerate(entry["comments"], 1):
+                st.text(comment["text"])
+                key = f"flag_comment_{rid}_{record_id}_{comment['key']}_{draft['generation']}"
+                include = st.checkbox(f"Include comment {number} in CCC report", value=comment["key"] in chosen,
+                                      key=key, disabled=not can_select or pending)
+                if include:
+                    chosen.add(comment["key"])
+                else:
+                    chosen.discard(comment["key"])
+            if can_select:
+                if chosen == saved_by_record.get(record_id, set()):
+                    draft["choices"].pop(record_id, None)
+                else:
+                    draft["choices"][record_id] = sorted(chosen)
+
+    dirty = bool(draft["choices"])
+    if dirty:
+        st.warning("Comment selections have not been saved yet. Save them before creating a Word report.")
+    else:
+        st.caption("The selections shown are saved. Changing a cutoff does not remove a previously selected comment.")
+    save_column, discard_column = st.columns(2)
+    with save_column:
+        save_choices = st.button("Save comment selections", type="primary", width="stretch",
+                                 disabled=not can_select or not dirty or pending)
+    with discard_column:
+        discard = st.button("Discard unsaved selections", width="stretch", disabled=not dirty or pending)
+    if discard:
+        st.session_state.pop(draft_key, None)
+        st.rerun()
+    if save_choices:
+        try:
+            candidate = flags.save_comment_choices(state, rid, draft["choices"], _actor())
+            if _persist(candidate, store, "Comment selections saved for the CCC report."):
+                st.session_state.pop(draft_key, None)
+                st.rerun()
+        except m.ValidationError as exc:
+            st.error(str(exc))
+
+
 def _timeline(state: dict, resident: dict) -> None:
     rows = []
     for pgy in range(1, 5):
@@ -500,6 +648,10 @@ def _resident_page(state: dict, store: GitHubStore | None) -> None:
     if st.button("Open yearly exam scores, clinic tallies and encounters"):
         st.session_state["yearly_progress_resident"] = resident["id"]
         st.session_state["nav_target"] = "Yearly progress"
+        st.rerun()
+    if st.button("Review evaluation flags and select comments"):
+        st.session_state["evaluation_flagger_resident"] = resident["id"]
+        st.session_state["nav_target"] = "Evaluation flagger"
         st.rerun()
     start, end = _range_controls(state, prefix="resident_range")
     records = m.records_for(state, resident["id"], start, end)
@@ -1195,7 +1347,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
 
 
 def _word_reports(state: dict) -> None:
-    from ccc import annual
+    from ccc import annual, evaluation_flags
     from ccc.ccc_summary import build_ccc_summary
     from ccc.reports import build_resident_report, build_ccc_letter
 
@@ -1267,6 +1419,7 @@ def _word_reports(state: dict) -> None:
                if document_type == "Progress report" else document_type == "CCC summary")
     if document_type == "CCC summary":
         st.caption("Uses your table format, with Medicine and Pediatrics evaluation summaries starting on separate pages.")
+        st.caption("Saved choices from Evaluation flagger appear on a separate comments page after both evaluation summaries.")
     st.caption("Downloads are standard Word files. No export passphrase is required.")
     context = json.dumps({"revision": state["revision"], "residents": [r["id"] for r in selected_residents],
                           "review": selected_review, "start": start, "end": end, "type": document_type,
@@ -1299,9 +1452,11 @@ def _word_reports(state: dict) -> None:
                         plain = build_ccc_letter(export_resident, chosen_review, program_name=program_name)
                     elif document_type == "CCC summary":
                         tracking = annual.progress_for(state, resident["id"], selected_end, review=chosen_review)
+                        selected_comments = evaluation_flags.selected_for_report(
+                            state, resident["id"], selected_start, selected_end, review=chosen_review)
                         plain = build_ccc_summary(export_resident, m.active_records(state), state["reviews"],
                                                   period_start=selected_start, period_end=selected_end, review=chosen_review,
-                                                  program_name=program_name, tracking=tracking)
+                                                  program_name=program_name, tracking=tracking, selected_comments=selected_comments)
                     else:
                         plain = build_resident_report(export_resident, m.active_records(state), state["reviews"],
                                                        period_start=selected_start, period_end=selected_end, review=chosen_review,
@@ -1543,13 +1698,13 @@ def _sidebar(state: dict) -> str:
         identity = st.session_state.get("identity", {})
         st.text(identity.get("display_name", "Fictional preview"))
         if st.session_state.get("demo"):
-            pages = ["Program dashboard", "Yearly progress", "Resident review", "Word reports"]
+            pages = ["Program dashboard", "Yearly progress", "Resident review", "Evaluation flagger", "Word reports"]
             st.caption("Fictional data only. Uploads and saving are unavailable.")
         else:
             pages = ["Program dashboard"]
             if _permission("upload"):
                 pages.append("Upload files")
-            pages.extend(["Yearly progress", "Resident review", "Word reports"])
+            pages.extend(["Yearly progress", "Resident review", "Evaluation flagger", "Word reports"])
             if _permission("manage"):
                 pages.append("Administration")
         if st.session_state.get("nav_target") in pages:
@@ -1639,6 +1794,8 @@ def run() -> None:
         _yearly_progress_page(state, store)
     elif page == "Resident review":
         _resident_page(state, store)
+    elif page == "Evaluation flagger":
+        _evaluation_flagger_page(state, store)
     elif page == "Word reports":
         _word_reports(state)
     elif page == "Administration":
@@ -1663,5 +1820,7 @@ def run_demo() -> None:
         _yearly_progress_page(state, None)
     elif page == "Resident review":
         _resident_page(state, None)
+    elif page == "Evaluation flagger":
+        _evaluation_flagger_page(state, None)
     elif page == "Word reports":
         _word_reports(state)

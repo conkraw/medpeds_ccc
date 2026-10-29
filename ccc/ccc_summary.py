@@ -14,6 +14,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from io import BytesIO
+import hashlib
 import html
 import json
 import math
@@ -709,6 +710,109 @@ def _restore_empty_evaluator_cells(doc: Any, source_html: str) -> None:
             rendered_row.cells[-1].text = ""
 
 
+def _selected_comment_rows(ctx: _Context, selected: list[dict] | None) -> list[dict]:
+    """Resolve explicit choices against this report's resident-owned evidence.
+
+    Live choices identify a source comment; their display text and metadata are
+    never trusted. Final reviews retain the text saved at finalization and do
+    not acquire selections made afterward.
+    """
+    choices = ((ctx.narrative_review or {}).get("evaluation_comment_snapshot", [])
+               if ctx.final else selected or [])
+    if not isinstance(choices, list):
+        raise m.ValidationError("Selected evaluation comments must be a list.")
+    if not choices:
+        return []
+    from ccc.evaluation_flags import comment_candidates, evaluation_metadata
+
+    evidence = {record.get("id"): record for record in ctx.evidence
+                if record.get("id") and record.get("category") == "evaluations"}
+    resolved = []
+    seen = set()
+    for item in choices:
+        if not isinstance(item, dict) or item.get("resident_id") != ctx.resident["id"]:
+            continue
+        record = evidence.get(item.get("record_id"))
+        key = item.get("comment_key")
+        if (record is None or not isinstance(key, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", key)
+                or item.get("date") != record.get("date")):
+            continue
+        identity = (record["id"], key)
+        if identity in seen:
+            continue
+        metadata = evaluation_metadata(record)
+        if ctx.final:
+            comment = item.get("comment")
+            if (not isinstance(comment, str) or not comment.strip()
+                    or hashlib.sha256(comment.encode("utf-8")).hexdigest() != key
+                    or item.get("specialty") not in {"Medicine", "Pediatrics"}
+                    or not isinstance(item.get("evaluator"), str)):
+                continue
+            specialty = item["specialty"]
+            evaluator = item["evaluator"]
+            # Keep resident-on-resident feedback anonymous even if an older
+            # preserved row contains an evaluator label.
+            session = " ".join(str(record.get("form", "")).split()).casefold()
+            if session in {"res eval res", "resident evaluation of resident"}:
+                evaluator = ""
+        else:
+            candidates = {candidate["key"]: candidate["text"]
+                          for candidate in comment_candidates(record)}
+            comment = candidates.get(key, "")
+            if not comment:
+                continue
+            specialty, evaluator = metadata["specialty"], metadata["evaluator"]
+        seen.add(identity)
+        resolved.append({"date": record["date"], "specialty": specialty,
+                         "evaluator": evaluator, "comment": comment})
+    return sorted(resolved, key=lambda item: item["date"])
+
+
+def _selected_comment_display(value: str, subject_name: str) -> str:
+    """Apply the notebook's existing name cleanup without losing paragraphs."""
+    source = html.escape(value).replace("\n", "&#10;")
+    cleaned = word.clean_eval_html_keep_formatting(source, subject_name)
+    return BeautifulSoup(cleaned, "html.parser").get_text().strip()
+
+
+def _add_selected_comments_table(doc: Any, comments: list[dict], subject_name: str) -> None:
+    """Append the selected narrative page in the report's existing table style."""
+    if not comments:
+        return
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.oxml import OxmlElement
+
+    word.add_page_break(doc)
+    table = doc.add_table(rows=2 + len(comments), cols=3)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
+    word.force_table_width(table, [1.15, 1.65, 4.8])
+    word.set_row_height(table, 0.2)
+    title = table.cell(0, 0).merge(table.cell(0, 2))
+    word.shade_cell(title, "D9EAF7")
+    word.set_cell_text(title, "SELECTED EVALUATION COMMENTS", bold=True, size=7)
+    for column, label in enumerate(("Designation", "Evaluator", "Comment")):
+        cell = table.cell(1, column)
+        word.shade_cell(cell, "EDEDED")
+        word.set_cell_text(cell, label, bold=True, size=6)
+    for header in table.rows[:2]:
+        header._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+        for cell in header.cells:
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.keep_with_next = True
+    for index, entry in enumerate(comments, start=2):
+        values = (
+            "Pediatric comment" if entry["specialty"] == "Pediatrics" else "Medicine comment",
+            _selected_comment_display(entry["evaluator"], subject_name),
+            _selected_comment_display(entry["comment"], subject_name),
+        )
+        for column, value in enumerate(values):
+            cell = table.cell(index, column)
+            word.shade_cell(cell, "FFFFFF")
+            word.set_cell_text(cell, value, size=6, align="left")
+
+
 def build_ccc_summary(
     resident: dict,
     records: list[dict],
@@ -719,14 +823,16 @@ def build_ccc_summary(
     review: dict | None = None,
     program_name: str = "Medicine Pediatrics Residency",
     tracking: list[dict] | None = None,
+    selected_comments: list[dict] | None = None,
 ) -> bytes:
     """Build an ordinary editable DOCX using the actual Jupyter Word functions.
 
     The original formatting, table order, numerical descriptions, name cleanup,
     and Medicine/Pediatrics page breaks are retained. Recorded USMLE scores use
     the notebook's existing optional table. Evaluation sections follow the
-    rotation name and show narrative feedback only. Self-assessments use the
-    same evaluation layout after the original report.
+    rotation name and show narrative feedback only. Explicitly selected
+    evaluation comments start on their own page after both summaries, followed
+    by self-assessments in the same original evaluation layout.
     """
     ctx = _context(resident, records, reviews, period_start, period_end, review, tracking)
     row = _prepare_row(ctx)
@@ -744,6 +850,7 @@ def build_ccc_summary(
         word.add_usmle_scores_table(doc, row)
         if scholarly is not None:
             scholarly._tbl.addprevious(doc.tables[-1]._tbl)
+    _add_selected_comments_table(doc, _selected_comment_rows(ctx, selected_comments), row["subject_name"])
     self_assessments = [record for record in ctx.evidence if record.get("category") == "self_assessments"]
     if self_assessments:
         word.add_page_break(doc)
