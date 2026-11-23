@@ -1,2 +1,2 @@
-libreoffice-impress
+libreoffice-writer
 fonts-liberation

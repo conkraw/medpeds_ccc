@@ -1,0 +1,45 @@
+MED-PEDS CCC PDF PREVIEW UPDATE
+
+This update adds a large "Preview Word reports as PDF" button at the top
+of the sidebar and an "Open PDF preview" button beside "Prepare Word download".
+The sidebar starts expanded.
+
+INSTALL
+
+1. Extract this ZIP on your computer.
+
+2. Open the GitHub repository and branch used by your Streamlit CCC app.
+   Replace ccc/ui.py inside the existing ccc folder.
+   Add ccc/pdf_preview.py in that same folder.
+
+3. Replace requirements.txt in the main repository folder beside app.py.
+   Add packages.txt in that main folder.
+   If you already have a packages.txt file with other software listed,
+   keep those lines and add libreoffice-writer and fonts-liberation.
+   Keep the existing app.py, secrets, and all other application files.
+
+4. Commit the changes, then reboot your Streamlit app.
+   The first restart can take longer while the PDF converter is installed.
+   Refresh your browser after the app restarts.
+
+CHECK THE UPDATE
+
+At the top of the sidebar, below the signed-in name, look for the large
+"Preview Word reports as PDF" button.
+
+You can also open Word reports and click "Open PDF preview" beside
+"Prepare Word download". This carries over the selected resident, report
+type, date range, and saved review. For group reports it opens the first
+chosen resident.
+
+On the preview page, click "Prepare PDF preview". Download PDF and
+Download Word file appear above the preview.
+
+If the new buttons are missing, check that the updated file is stored as
+ccc/ui.py in the repository and branch actually deployed by Streamlit.
+The files in this ZIP should replace the existing files directly,
+without an extra enclosing folder.
+
+This is an update package for your existing CCC app, with no resident
+data, passwords, tokens, or encryption keys included.
+
