@@ -1,6 +1,7 @@
 """Small, task-based Streamlit interface for the coordinator and CCC."""
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import io
@@ -68,7 +69,8 @@ def _pretty_time(value: str) -> str:
 
 
 def _configure() -> None:
-    st.set_page_config(page_title="Med-Peds Resident Progress", page_icon="📋", layout="wide")
+    st.set_page_config(page_title="Med-Peds Resident Progress", page_icon="📋", layout="wide",
+                       initial_sidebar_state="expanded")
     # Only static CSS is rendered as HTML; uploaded names and comments are text.
     st.markdown("""<style>
     .block-container{padding-top:1.8rem;max-width:1480px}
@@ -195,13 +197,14 @@ def _clear_removed_resident_state(removed_ids: set[str]) -> None:
     """Discard selections and previews that can refer to a removed resident."""
     _reset_uploads()
     for key in list(st.session_state):
-        if key in {"selected_resident", "resident_page_picker", "export_resident", "roster_selection", "yearly_progress_resident", "evaluation_flagger_resident"}:
+        if key in {"selected_resident", "resident_page_picker", "export_resident", "preview_resident", "roster_selection", "yearly_progress_resident", "evaluation_flagger_resident"}:
             if st.session_state[key] in removed_ids:
                 st.session_state.pop(key, None)
         elif key.startswith(("map_", "replace_", "include_")):
             st.session_state.pop(key, None)
-        elif key.startswith(("review_", "confirm_remove_", "annual_", "export_range_", "evaluation_flagger_", "flag_comment_")) and any(rid in key for rid in removed_ids):
+        elif key.startswith(("review_", "confirm_remove_", "annual_", "export_range_", "preview_range_", "evaluation_flagger_", "flag_comment_")) and any(rid in key for rid in removed_ids):
             st.session_state.pop(key, None)
+    st.session_state.pop("generated_preview", None)
 
 
 def _load(store: GitHubStore) -> dict | None:
@@ -238,6 +241,7 @@ def _persist(candidate: dict, store: GitHubStore, message: str) -> bool:
     st.session_state["sha"] = sha
     st.session_state["notice"] = message
     st.session_state.pop("generated_export", None)
+    st.session_state.pop("generated_preview", None)
     return True
 
 
@@ -271,6 +275,7 @@ def _save_problem(store: GitHubStore, keys: list[str]) -> None:
             st.session_state.pop("pending_save", None)
             st.session_state.pop("upload_preview", None)
             st.session_state.pop("generated_export", None)
+            st.session_state.pop("generated_preview", None)
             st.rerun()
     st.divider()
 
@@ -1346,11 +1351,44 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             st.error("Not saved to the dashboard. " + str(exc))
 
 
-def _word_reports(state: dict) -> None:
+def _report_document(state: dict, resident: dict, document_type: str,
+                     start: str, end: str, *, review: dict | None = None,
+                     details: bool = True) -> tuple[str, bytes]:
+    """Build the same Word document for downloading and PDF previewing."""
     from ccc import annual, evaluation_flags
     from ccc.ccc_summary import build_ccc_summary
     from ccc.reports import build_resident_report, build_ccc_letter
 
+    export_resident = (review.get("snapshot_resident", resident)
+                       if review and review.get("status") == "Final" else resident)
+    selected_start = review["period_start"] if review else start
+    selected_end = review["period_end"] if review else end
+    if selected_start > selected_end:
+        raise m.ValidationError("A report ends before the resident's start date. Adjust the dates or resident selection.")
+    program_name = state["settings"].get("program_name", "Medicine Pediatrics Residency")
+    if document_type == "CCC letter":
+        if not review:
+            raise m.ValidationError("Save a CCC review before generating its letter.")
+        plain = build_ccc_letter(export_resident, review, program_name=program_name)
+    elif document_type == "CCC summary":
+        tracking = annual.progress_for(state, resident["id"], selected_end, review=review)
+        selected_comments = evaluation_flags.selected_for_report(
+            state, resident["id"], selected_start, selected_end, review=review)
+        plain = build_ccc_summary(export_resident, m.active_records(state), state["reviews"],
+                                  period_start=selected_start, period_end=selected_end, review=review,
+                                  program_name=program_name, tracking=tracking, selected_comments=selected_comments)
+    elif document_type == "Progress report":
+        plain = build_resident_report(export_resident, m.active_records(state), state["reviews"],
+                                      period_start=selected_start, period_end=selected_end, review=review,
+                                      program_name=program_name, include_details=details)
+    else:
+        raise m.ValidationError("Choose a supported report type.")
+    safe_name = re.sub(r"[^\w .-]", "", export_resident["name"]).strip(" .").replace(" ", "_") or "Resident"
+    suffix = {"CCC summary": "CCC_Summary", "Progress report": "Progress_Report", "CCC letter": "CCC_Letter"}[document_type]
+    return f"{selected_end}_{safe_name}_{suffix}.docx", plain
+
+
+def _word_reports(state: dict) -> None:
     # Discard passphrase fields left over from an older app session.
     for key in ("export_password", "export_confirmation", "clear_export_passwords"):
         st.session_state.pop(key, None)
@@ -1425,7 +1463,31 @@ def _word_reports(state: dict) -> None:
                           "review": selected_review, "start": start, "end": end, "type": document_type,
                           "protected": False, "details": details, "basis": bulk_basis,
                           "own_start_dates": own_start_dates}, sort_keys=True)
-    if st.button("Prepare Word download", type="primary", width="stretch"):
+    word_action, preview_action = st.columns(2)
+    with word_action:
+        prepare_word = st.button("Prepare Word download", type="primary", width="stretch")
+    with preview_action:
+        open_preview = st.button("Open PDF preview", key="word_open_pdf_preview", width="stretch",
+                                 disabled=not selected_residents,
+                                 help="Preview this Word report in the app. Group selections open one resident at a time.")
+    if open_preview:
+        preview_resident = selected_residents[0]
+        preview_start = preview_resident["start_date"] if own_start_dates else start
+        preview_review = selected_review or "__live__"
+        if scope == "Several residents" and bulk_basis == "Latest saved review in this range":
+            matches = sorted([r for r in state["reviews"] if r["resident_id"] == preview_resident["id"]
+                              and preview_start <= r["review_date"] <= end], key=lambda r: r["review_date"])
+            if not matches:
+                st.info("The first selected resident has no saved review in this period. Choose another resident or change the report basis.")
+                return
+            preview_review = matches[-1]["id"]
+        st.session_state["preview_open_request"] = {
+            "resident_id": preview_resident["id"], "document_type": document_type,
+            "start": preview_start, "end": end, "review": preview_review, "details": details,
+        }
+        st.session_state["nav_target"] = "Report preview"
+        st.rerun()
+    if prepare_word:
         st.session_state.pop("generated_export", None)
         if not selected_residents:
             st.session_state["export_error"] = "Choose at least one resident."
@@ -1442,30 +1504,12 @@ def _word_reports(state: dict) -> None:
                         if not matches:
                             raise m.ValidationError("A selected resident has no review in this period. Save their review or remove them from this batch.")
                         chosen_review = matches[-1]
-                    export_resident = chosen_review.get("snapshot_resident", resident) if chosen_review and chosen_review.get("status") == "Final" else resident
-                    program_name = state["settings"].get("program_name", "Medicine Pediatrics Residency")
-                    selected_start = chosen_review["period_start"] if chosen_review else report_start
-                    selected_end = chosen_review["period_end"] if chosen_review else end
-                    if selected_start > selected_end:
-                        raise m.ValidationError("A report ends before the resident's start date. Adjust the dates or resident selection.")
-                    if document_type == "CCC letter":
-                        plain = build_ccc_letter(export_resident, chosen_review, program_name=program_name)
-                    elif document_type == "CCC summary":
-                        tracking = annual.progress_for(state, resident["id"], selected_end, review=chosen_review)
-                        selected_comments = evaluation_flags.selected_for_report(
-                            state, resident["id"], selected_start, selected_end, review=chosen_review)
-                        plain = build_ccc_summary(export_resident, m.active_records(state), state["reviews"],
-                                                  period_start=selected_start, period_end=selected_end, review=chosen_review,
-                                                  program_name=program_name, tracking=tracking, selected_comments=selected_comments)
-                    else:
-                        plain = build_resident_report(export_resident, m.active_records(state), state["reviews"],
-                                                       period_start=selected_start, period_end=selected_end, review=chosen_review,
-                                                       program_name=program_name, include_details=details)
-                    safe_name = re.sub(r"[^\w .-]", "", export_resident["name"]).strip(" .").replace(" ", "_") or "Resident"
+                    filename, plain = _report_document(state, resident, document_type, report_start, end,
+                                                       review=chosen_review, details=details)
                     if name_counts[m.normalize_name(resident["name"])] > 1:
-                        safe_name += "_" + resident["id"][:8]
-                    suffix = {"CCC summary": "CCC_Summary", "Progress report": "Progress_Report", "CCC letter": "CCC_Letter"}[document_type]
-                    filename = f"{selected_end}_{safe_name}_{suffix}.docx"
+                        suffix = {"CCC summary": "CCC_Summary", "Progress report": "Progress_Report", "CCC letter": "CCC_Letter"}[document_type]
+                        ending = f"_{suffix}.docx"
+                        filename = filename[:-len(ending)] + "_" + resident["id"][:8] + ending
                     outputs.append((filename, plain))
             if len(outputs) == 1:
                 filename, payload = outputs[0]
@@ -1484,6 +1528,127 @@ def _word_reports(state: dict) -> None:
     if generated and generated["context"] == context:
         st.success("Your Word download is ready.")
         st.download_button("Download Word file" if scope == "One resident" else "Download Word files", generated["data"], generated["filename"], generated["mime"], type="primary", width="stretch")
+
+
+def _report_preview(state: dict) -> None:
+    from ccc.pdf_preview import PreviewError, docx_to_pdf
+
+    st.header("Report preview")
+    st.write("View a resident's Word report as a PDF, then download either version.")
+    if not _permission("export") and not st.session_state.get("demo"):
+        st.session_state.pop("generated_preview", None)
+        st.info("Your account cannot export reports.")
+        return
+    if not state["residents"]:
+        st.session_state.pop("generated_preview", None)
+        st.info("Add the resident roster first.")
+        return
+    # Apply the Word page's current choices before constructing preview widgets.
+    # A pending request survives Streamlit's cleanup of widgets on the old page.
+    request = st.session_state.pop("preview_open_request", None)
+    if request and any(r["id"] == request["resident_id"] for r in state["residents"]):
+        resident_id = request["resident_id"]
+        st.session_state["selected_resident"] = resident_id
+        st.session_state["preview_resident"] = resident_id
+        st.session_state["preview_document_type"] = request["document_type"]
+        st.session_state["preview_review"] = request["review"]
+        st.session_state["preview_details"] = request["details"]
+        st.session_state[f"preview_range_{resident_id}_start"] = m.parse_date(request["start"])
+        st.session_state[f"preview_range_{resident_id}_end"] = m.parse_date(request["end"])
+    resident = _pick_resident(state, "preview_resident")
+    document_type = st.radio("Document", ["CCC summary", "Progress report", "CCC letter"],
+                             horizontal=True, key="preview_document_type")
+    reviews = sorted([r for r in state["reviews"] if r["resident_id"] == resident["id"]],
+                     key=lambda r: r["review_date"], reverse=True)
+    review_map = {r["id"]: r for r in reviews}
+    for saved_review in reviews:
+        for n, old in enumerate(saved_review.get("versions", []), 1):
+            review_map[f"{saved_review['id']}::version-{n}"] = old
+    options = ([] if document_type == "CCC letter" else ["__live__"]) + list(review_map)
+    if not options:
+        st.session_state.pop("generated_preview", None)
+        st.info("Save a CCC review before generating its letter.")
+        return
+    if st.session_state.get("preview_review") not in options:
+        st.session_state.pop("preview_review", None)
+    selected_review = st.selectbox(
+        "Use evidence from", options, key="preview_review",
+        format_func=lambda x: "Current dashboard date range" if x == "__live__" else
+        f"PGY{review_map[x]['pgy']} {review_map[x]['half']} · {review_map[x]['academic_year']} · {review_map[x]['status']}"
+        + (" · prior version" if "::version" in x else ""))
+    review = review_map.get(selected_review)
+    if review:
+        start, end = review["period_start"], review["period_end"]
+        st.caption(f"Evidence period: {start} to {end}. " +
+                   ("This finalized review uses its preserved evidence and yearly values."
+                    if review["status"] == "Final" else "This draft uses current saved evidence."))
+    else:
+        start, end = _range_controls(state, prefix=f"preview_range_{resident['id']}",
+                                     default_start=m.parse_date(resident["start_date"]))
+        st.caption("The default range is the resident's start date through today.")
+    details = (st.checkbox("Include all evaluation comments and detailed evidence", value=True,
+                            key="preview_details") if document_type == "Progress report"
+               else document_type == "CCC summary")
+    if document_type == "CCC summary":
+        st.caption("Includes the same milestone tables, specialty summaries, and selected comments as your Word report.")
+
+    # A preview belongs only to this signed-in session and this saved context.
+    # Do not put resident documents in shared Streamlit caches or GitHub.
+    context = json.dumps({"revision": state["revision"], "updated_at": state.get("updated_at"),
+                          "sha": st.session_state.get("sha"), "resident": resident["id"],
+                          "review": selected_review, "start": start, "end": end,
+                          "type": document_type, "details": details}, sort_keys=True)
+    generated = st.session_state.get("generated_preview")
+    if generated and generated.get("context") != context:
+        st.session_state.pop("generated_preview", None)
+        generated = None
+    if st.button("Prepare PDF preview", type="primary", width="stretch"):
+        st.session_state.pop("generated_preview", None)
+        try:
+            with st.spinner("Preparing PDF preview..."):
+                filename, plain = _report_document(state, resident, document_type, start, end,
+                                                   review=review, details=details)
+                generated = {"context": context, "resident_id": resident["id"],
+                             "filename": filename, "docx": plain, "pdf": None, "error": None}
+                try:
+                    generated["pdf"] = docx_to_pdf(plain)
+                except PreviewError as exc:
+                    generated["error"] = str(exc)
+                st.session_state["generated_preview"] = generated
+        except (ValueError, OSError) as exc:
+            st.error(str(exc) if isinstance(exc, m.ValidationError) else
+                     "The Word report could not be prepared. Check the selected review and dates, then try again.")
+            return
+    if not generated:
+        return
+    if generated.get("error"):
+        st.error(generated["error"])
+        st.caption("Your Word report is ready below. You can try preparing the PDF again.")
+    word_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if generated["pdf"]:
+        left, right = st.columns(2)
+        with left:
+            st.download_button("Download PDF", generated["pdf"],
+                               str(Path(generated["filename"]).with_suffix(".pdf")),
+                               "application/pdf", key="preview_download_pdf", width="stretch")
+        with right:
+            st.download_button("Download Word file", generated["docx"], generated["filename"],
+                               word_mime, key="preview_download_word", width="stretch")
+        # A data URI goes straight to the viewer, without an external conversion
+        # service or a separate preview document URL in the media manager.
+        pdf_uri = "data:application/pdf;base64," + base64.b64encode(generated["pdf"]).decode("ascii")
+        viewer_key = "report_pdf_" + hashlib.sha256(generated["pdf"]).hexdigest()
+        try:
+            # The component's public API accepts a data URI. Streamlit 1.66's
+            # st.pdf wrapper instead tries to open that string as a file path.
+            from streamlit_pdf import pdf_viewer
+            pdf_viewer(pdf_uri, height=900, key=viewer_key)
+        except (ImportError, AttributeError):
+            st.warning("The PDF is ready, but the viewer is not installed. Update requirements.txt and restart the app to enable the preview. You can download the PDF above.")
+        st.caption("The preview is converted from the Word file. Microsoft Word may display small differences in fonts or page breaks.")
+    else:
+        st.download_button("Download Word file", generated["docx"], generated["filename"],
+                           word_mime, key="preview_download_word", width="stretch")
 
 
 def _roster(state: dict, store: GitHubStore) -> None:
@@ -1697,14 +1862,17 @@ def _sidebar(state: dict) -> str:
         st.title("Med-Peds CCC")
         identity = st.session_state.get("identity", {})
         st.text(identity.get("display_name", "Fictional preview"))
+        if _permission("export") or st.session_state.get("demo"):
+            if st.button("Preview Word reports as PDF", key="sidebar_pdf_preview", type="primary", width="stretch"):
+                st.session_state["nav_target"] = "Report preview"
         if st.session_state.get("demo"):
-            pages = ["Program dashboard", "Yearly progress", "Resident review", "Evaluation flagger", "Word reports"]
+            pages = ["Program dashboard", "Yearly progress", "Resident review", "Evaluation flagger", "Word reports", "Report preview"]
             st.caption("Fictional data only. Uploads and saving are unavailable.")
         else:
             pages = ["Program dashboard"]
             if _permission("upload"):
                 pages.append("Upload files")
-            pages.extend(["Yearly progress", "Resident review", "Evaluation flagger", "Word reports"])
+            pages.extend(["Yearly progress", "Resident review", "Evaluation flagger", "Word reports", "Report preview"])
             if _permission("manage"):
                 pages.append("Administration")
         if st.session_state.get("nav_target") in pages:
@@ -1722,6 +1890,7 @@ def _sidebar(state: dict) -> str:
             if st.button("Refresh saved data", disabled=bool(st.session_state.get("pending_save")), width="stretch"):
                 st.session_state.pop("state", None)
                 st.session_state.pop("generated_export", None)
+                st.session_state.pop("generated_preview", None)
                 st.rerun()
             if st.button("Sign out", width="stretch"):
                 _clear_session()
@@ -1798,6 +1967,8 @@ def run() -> None:
         _evaluation_flagger_page(state, store)
     elif page == "Word reports":
         _word_reports(state)
+    elif page == "Report preview":
+        _report_preview(state)
     elif page == "Administration":
         _administration(state, store, keys, users, gh)
 
@@ -1824,3 +1995,5 @@ def run_demo() -> None:
         _evaluation_flagger_page(state, None)
     elif page == "Word reports":
         _word_reports(state)
+    elif page == "Report preview":
+        _report_preview(state)
