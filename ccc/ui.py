@@ -964,7 +964,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         else:
             st.caption("No saved evaluation files to show.")
     with st.expander("Milestone reports"):
-        st.caption("Upload the New Innovations milestone PDFs directly, including reports with several residents. The app fills the Medicine and Pediatrics milestone tables in your CCC Word summary.")
+        st.caption("Upload New Innovations milestone reports or the new General Pediatrics EPAs and Milestones Crosswalk PDFs. The app fills the milestone tables in your CCC Word summary.")
         for specialty, widget, column in zip(("Medicine", "Pediatrics"), ("milestones", "peds_milestones"), st.columns(2)):
             with column, st.container(border=True):
                 st.subheader(specialty + " milestones")
@@ -972,8 +972,12 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                                          type=["pdf", "csv", "xlsx", "xls", "tsv"], accept_multiple_files=True,
                                          key=f"files_{widget}_{generation}")
                 groups.append(("milestones", files, specialty))
-                st.caption("One file or several. You can also use the all_resident_milestones.csv file from your notebook.")
+                if specialty == "Pediatrics":
+                    st.caption("For a crosswalk PDF, the app reads the resident's name and recommendations table on page one. A range such as 2–3.5 is saved as 3.5. FALL goes in Midyear and SPRING in Year end for the printed PGY.")
+                else:
+                    st.caption("One file or several, including New Innovations reports with several residents. You can also use the all_resident_milestones.csv file from your notebook.")
         st.caption("Use the report's own dates and training year. An x stays unassessed. Only residents matched to your Administration roster are saved.")
+        st.caption("Crosswalk PDFs without a calendar date use Fallback period ends below as their as-of date. Set that date to the assessment date when importing an older report.")
     with st.expander("Self-assessments and other reports"):
         specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
         st.caption("This choice applies to the additional reports below. Choose Combined for a mixed evaluation export or shared administrative reports.")

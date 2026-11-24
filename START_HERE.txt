@@ -1,0 +1,85 @@
+MED-PEDS CCC COMPLETE APP
+Version 1.2.0
+Packaged November 23, 2026
+
+This ZIP contains the complete deployable application and the latest updates.
+You do not need to combine it with an earlier update ZIP.
+
+UPDATE YOUR EXISTING APP
+
+1. Extract the ZIP on your computer. You should see app.py, requirements.txt,
+   packages.txt, the ccc folder, templates, and the other project files.
+
+2. Open the GitHub repository and branch used by your existing Streamlit app.
+   Upload the extracted application files, replacing files with the same names.
+   Keep app.py at the repository root and keep the ccc folder beside it.
+   Preserve the folder structure. Do not upload the ZIP itself as the app.
+
+3. Keep your existing Streamlit Secrets unchanged. The current encryption key,
+   account passwords, GitHub token, data repository, branch, and encrypted-data
+   path are needed to reconnect to the saved dashboards.
+   Keep existing encrypted data files and backups in their current locations.
+   Do not delete the repository or its encrypted data to install this package.
+
+4. Commit the application files. In Streamlit, confirm the entry point is
+   app.py, then reboot the app and refresh your browser. The first restart
+   may take longer while LibreOffice Writer and the PDF viewer are installed.
+
+5. Sign in with your existing account. Your saved roster should load.
+   Administration shows App version 1.2.0. If the app offers to create an
+   empty dashboard when you expect existing records, check that Secrets still
+   point to the existing encrypted file before continuing.
+
+For this update, do not run the setup helper to create a new encryption key.
+The scripts/generate_secrets.py setup instructions are for a new installation.
+
+LATEST UPDATES INCLUDED
+
+- Sidebar button: Preview Word reports as PDF.
+- Word-to-PDF conversion using LibreOffice's server renderer.
+- Clear PDF error reference codes if the host cannot complete conversion.
+- New first-page General Pediatrics EPAs and Milestones Crosswalk import.
+- Highest number from each recommendation range, with single scores and
+  genuine zeros preserved.
+- FALL mapped to Midyear and SPRING mapped to Year end for the printed PGY.
+- Evaluation flagger and selected comments in the CCC Word document.
+- Annual exam scores, clinic tallies, and observed encounters.
+- Existing roster matching, duplicate checks, encrypted storage, and accounts.
+
+USE THE NEW MILESTONE PDF FORMAT
+
+Open Upload files, expand Milestone reports, and select
+Add Pediatrics milestone files. Add one or more PDFs and process the files.
+Only residents matched to the Administration roster are saved.
+
+The app reads the resident name, PGY, season, and recommendations table from
+page one. A range such as 2-3.5 is saved as 3.5. Later EPA explanation and
+input pages do not supply milestone scores.
+
+If the PDF has no printed calendar date, the app uses Fallback period ends
+under Dates for reports without dates. This defaults to today. Select the
+appropriate assessment date when importing an older report.
+
+After saving, prepare a new CCC summary using Current dashboard date range.
+A current PGY2 FALL assessment appears in the PGY2 MY milestone row.
+Finalized CCC reviews keep the evidence snapshots saved when finalized.
+
+PREVIEW A WORD REPORT
+
+Click Preview Word reports as PDF in the sidebar. Choose a resident and
+report, then click Prepare PDF preview. Download PDF and Download Word file
+appear above the viewer. Open PDF preview is also available from Word reports.
+
+If PDF conversion still fails after installing this package and rebooting,
+send the new error message and its PDF reference code.
+
+PACKAGE CONTENTS
+
+app.py is the production entry point. All ccc modules are included.
+requirements.txt installs the Python dependencies. packages.txt installs
+LibreOffice Writer and fonts. The Streamlit configuration and upload
+templates are included, along with the fictional demo and examples.
+
+This package contains application code and fictional examples. Existing
+resident records remain in your configured encrypted storage. Your current
+passwords, tokens, and encryption key are not included in the ZIP.

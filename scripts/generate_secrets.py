@@ -40,7 +40,7 @@ session_timeout_minutes = 30
 
 [github]
 owner = "YOUR_GITHUB_OWNER"
-repo = "YOUR_PRIVATE_DATA_REPOSITORY"
+repo = "YOUR_DATA_REPOSITORY"
 branch = "main"
 path = "encrypted/ccc.enc"
 token = "PASTE_FINE_GRAINED_GITHUB_TOKEN_HERE"

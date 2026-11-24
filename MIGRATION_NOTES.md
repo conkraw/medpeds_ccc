@@ -1,40 +1,44 @@
-# From the existing workflow to the resident dashboard
+# Existing app data and the earlier REDCap workflow
 
-The attached material contains 17 notebooks and a seven-page populated REDCap dashboard. The evaluation and SAR notebooks each have a duplicate copy. Their source code was reviewed to identify input layouts, review fields and Word output requirements. Original New Innovations spreadsheets, resident milestone PDFs and local letter template DOCX files were not included.
+## Updating this Streamlit app
 
-## Preserved structure
+This complete package replaces application files. It does not replace the encrypted resident archive.
 
-| Existing concept | App representation |
+Keep the existing Streamlit Secrets, encryption key, GitHub token, data repository, branch and data path. Existing saved records can be read by the updated app. Do not create a new encryption key or initialize an empty dashboard as part of this update.
+
+Whole original exports are not retained from new uploads. Earlier app versions may have stored separate encrypted originals. Preserve the existing data repository if those historical objects are needed.
+
+## How the earlier workflow is represented
+
+| Earlier concept | Current app |
 | --- | --- |
-| `r1my`, `r1eoy` through `r4my`, `r4eoy` | One resident plus eight dated review checkpoints. The academic year remains part of the identity. |
-| Medicine and Pediatrics evaluation fields | Distinct specialty-labeled evidence records with original questions, responses, comments, evaluator, rotation and dates. |
-| Resident self-assessment question triplets | Every dated form with its question text, response and comment. |
-| Separate milestone code sets | Explicit Medicine or Pediatrics scores, retained by code, form, actual date and source. |
-| Coach and graduation date | Resident roster fields, with a profile copy preserved at finalization. |
-| Clinic counts, observed encounters, ITE and USMLE | Fields within each dated CCC review, entered by the program. |
-| Scholarship, advocacy, RN/team feedback and narratives | Review fields with editable Word output. |
-| Procedure logger and conference exports | Dated events and clearly identified source summaries. |
-| Duty-hour logs and reported violations | Complete source entries; no inferred compliance conclusions. |
-| CCC reports and resident letters | New editable DOCX layouts with optional password-to-open protection. |
+| r1my/r1eoy through r4my/r4eoy | One resident with eight dated CCC review checkpoints. |
+| Separate Medicine and Pediatrics evaluations | Specialty-specific evidence and separate Word summary pages. |
+| Resident self-assessments | Dated forms retaining source questions, responses and comments. |
+| Milestones | Separate Medicine and Pediatrics code sets and dated scores. |
+| ITE results, clinic totals and observed encounters | Yearly progress entries with dated history for PGY1 through PGY4. |
+| Coach and graduation date | Roster fields, preserved with finalized reviews. |
+| Scholarship, advocacy, nursing feedback and CCC narratives | Review fields included in the notebook-based Word summary. |
+| Selected concerning comments | Evaluation flagger selections on a separate comments page. |
+| Reports and letters | Editable Word downloads and optional PDF previews, with no export passphrase. |
 
-## Deliberate corrections
+## Evidence and history
 
-The previous evaluation workflow produced midyear and year-end copies by changing field suffixes without consistently applying a date cutoff. The app stores an observation once and chooses it by the review's actual dates.
+The app stores an observation once and selects it by the report's dates. It does not require separate midyear and year-end copies of evaluation exports. Historical exports can be imported in batches and later updated with new files. Duplicate checks protect already saved entries.
 
-The old source logic could limit output to 50 evaluations, five duty-hour details, or the first two self-assessments in a year. Those caps and ordinal assignment rules are not carried forward. Exact repeated question rows are deduplicated, while distinct responses and comments are retained.
+Residents are matched by name or a confirmed alias. The app creates its own internal reference. You do not need a New Innovations ID or REDCap record ID.
 
-The former milestone PDF steps took the final 21 Medicine or 22 Pediatrics numeric tokens and assigned a fixed positional order. The new parser requires explicit unambiguous code/score labels. It blocks scanned, positional, conflicting or multi-column score layouts rather than silently assigning uncertain scores. Missing scores remain missing.
+New Innovations milestone grids are read by their labeled cells. The new Pediatrics crosswalk uses its first-page recommendation table and saves the maximum of each printed range. Missing scores remain distinct from zero.
 
-Some old report and letter decisions followed a numeric threshold or the midyear/year-end field suffix. The app requires an explicit CCC assessment. It does not label readiness or concerns from the checkpoint or infer promotion from a score.
+Conference percentages and cumulative summaries retain their source periods. Duty-hour concerns remain source-reported evidence. The committee enters its assessment in a CCC review.
 
-The old duty tracker used gaps in shift start dates and incomplete windows to infer time off and compliance. The app keeps imported hours and source-reported concerns. It does not treat absent log entries as proof of a day off.
+Finalized reviews retain their saved evidence, resident profile and yearly values. An authorized reopening preserves the prior final version.
 
-Punctuation-stripped or shortened resident names could collide in the legacy scripts. The app assigns an internal resident ID, prefers a native New Innovations ID, and requires confirmation for unmatched names. Aliases are explicit and persisted.
+## REDCap history
 
-Procedure spellings and prefixes remain as exported. Similar labels are not automatically merged because they may represent different definitions. Conference snapshots keep their source dates and are not summed. Both kinds can be reviewed without losing their original wording.
+The earlier populated dashboard PDF explains the old layout but is not a complete data export. It cannot reconstruct every resident, field or historical review.
 
-## Historical migration boundary
+Original New Innovations evidence can be imported through the app. Existing CCC narratives can be entered into dated reviews. A bulk REDCap migration requires the REDCap CSV and data dictionary, with explicit resident, field and date mapping. Keep any old REDCap record ID as migration provenance when needed.
 
-The populated dashboard PDF can explain the old layout but cannot reconstruct all project fields, branching logic, every resident or all prior review periods. This release does not import the PDF as resident data and does not invent unseen historical records. A bulk historical migration should use the REDCap CSV and data dictionary, retaining the original record ID as provenance and explicitly matching each row to the new roster.
+This package does not claim to have imported historical REDCap records.
 
-Original reports already available from New Innovations can be imported through the app. Prior CCC narratives can be entered into dated reviews. The actual old letter wording can be incorporated later if the referenced template DOCX files are supplied.

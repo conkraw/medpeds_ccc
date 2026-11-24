@@ -535,6 +535,13 @@ def _canonical(record: dict, *, identity_only: bool = False) -> dict:
     if record.get("external_record_id"):
         keys.append("external_record_id")
     result = {k: record.get(k) for k in keys}
+    if (record.get("category") == "milestones"
+            and record.get("source_format") == "pediatrics_epa_milestone_crosswalk"):
+        # The printed season and PGY identify this undated report's checkpoint.
+        # Several historic reports may share the administrator's as-of date.
+        # Keep those checkpoints distinct in both duplicate and revision checks.
+        result["pgy"] = record.get("pgy")
+        result["half"] = record.get("half")
     if record.get("category") == "milestones" and isinstance(result.get("values"), dict):
         # The canonical metric identifies the milestone. PDF header spacing
         # and notebook CSV labels are provenance, not another assessment.

@@ -701,6 +701,9 @@ def _parse_generic(table: _Table, kind: str, specialty: str, start: str, end: st
     return True
 
 
+_PEDS_CROSSWALK_HEADING = r"General\s+Pediatrics\s+EPAs\s+and\s+Milestones\s+Crosswalk"
+
+
 def _read_pdf_pages(data: bytes) -> list[str]:
     import pdfplumber
     with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -713,6 +716,10 @@ def _read_pdf_pages(data: bytes) -> list[str]:
             if length > MAX_PDF_TEXT:
                 raise ValueError("The PDF contains too much extracted text; upload smaller reports.")
             pages.append(text)
+            # This report's recommendation table is entirely on page one.
+            # Later pages describe the EPA inputs and must not supply scores.
+            if len(pages) == 1 and re.search(_PEDS_CROSSWALK_HEADING, text, re.I):
+                break
         return pages
 
 
@@ -721,6 +728,115 @@ _PDF_MILESTONE_GROUPS = {
     "Medicine": (("PC", 6), ("MK", 3), ("SBP", 3), ("PBLI", 2), ("PROF", 4), ("ICS", 3)),
     "Pediatrics": (("PC", 5), ("MK", 2), ("SBP", 6), ("PBLI", 2), ("PROF", 4), ("ICS", 3)),
 }
+
+
+_CROSSWALK_RECOMMENDATION = re.compile(
+    r"(?<!\S)(?:\d+(?:\.\d+)?(?:\s*[-–—−]\s*\d+(?:\.\d+)?)?"
+    r"|not\s+(?:yet\s+)?assessed|unable\s+to\s+assess|not\s+applicable"
+    r"|n/?a|x|--|[-–—−])(?!\S)", re.I)
+
+
+def _crosswalk_recommendation(value: str) -> tuple[float | None, str]:
+    """Use only an explicit scalar or the largest endpoint of one range."""
+    supplied = re.sub(r"[–—−]", "-", value.strip())
+    if supplied == "-":
+        return None, "Not assessed"
+    pair = re.fullmatch(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)", supplied)
+    if pair:
+        endpoints = [float(pair.group(1)), float(pair.group(2))]
+        if not all(math.isfinite(number) and 0 <= number <= 5 for number in endpoints):
+            raise ValueError("Recommendation outside milestone scale")
+        return max(endpoints), "Recommended"
+    score, status = _score(supplied)
+    return score, "Recommended" if score is not None else status
+
+
+def _parse_pdf_peds_crosswalk(text: str, specialty: str, start: str, end: str, result: ParseResult) -> None:
+    """Read the resident heading and labeled recommendation table on page one.
+
+    Numeric positions are interpreted only within an explicitly labeled table
+    block with a matching resident name and the exact expected cell count.
+    Chart labels and subsequent pages never contribute recommendation values.
+    """
+    expected = [f"{domain}{number}" for domain, count in _PDF_MILESTONE_GROUPS["Pediatrics"]
+                for number in range(1, count + 1)]
+    headings = list(re.finditer(
+        r"^\s*([^\n]+?)\s*\((FALL|SPRING)\s+PGY\s*[- ]?\s*([1-4])\)\s*$",
+        text, re.I | re.M))
+    if len(headings) != 1:
+        result.errors.append("PDF page 1: expected one resident name followed by FALL or SPRING and PGY1 through PGY4. Re-export the complete crosswalk report.")
+        return
+    name = " ".join(headings[0].group(1).split())
+    if not name or not any(char.isalpha() for char in name) or re.search(r"\d", name):
+        result.errors.append("PDF page 1: a resident name could not be reliably read from the crosswalk heading.")
+        return
+    season, pgy = headings[0].group(2).upper(), int(headings[0].group(3))
+    half = "Midyear" if season == "FALL" else "Year end"
+    anchors = list(re.finditer(r"Here\s+are\s+these\s+recommendations\s+in\s+table\s+form", text, re.I))
+    if len(anchors) != 1 or anchors[0].start() <= headings[0].end():
+        result.errors.append("PDF page 1: the recommendations table could not be identified. Upload the complete text-based crosswalk PDF.")
+        return
+    table_text = text[anchors[0].end():]
+    header_rows = list(re.finditer(r"^\s*Learner\s+([^\n]+)$", table_text, re.I | re.M))
+    if not header_rows:
+        result.errors.append("PDF page 1: the recommendations table has no readable Learner and milestone headings.")
+        return
+    scores: dict[str, tuple[float | None, str, str, int, int]] = {}
+    for block_number, header in enumerate(header_rows, 1):
+        labels = header.group(1).split()
+        codes = [_milestone_code(label) for label in labels]
+        if (not labels or any(not re.fullmatch(r"(?:PC|MK|SBP|PBLI|PROF?|ICS)\d+", label, re.I)
+                              for label in labels)
+                or len(set(codes)) != len(codes) or any(code not in expected or code in scores for code in codes)):
+            result.errors.append(f"PDF page 1, recommendation table {block_number}: milestone headings are missing, repeated, or unexpected. Re-export the table before saving.")
+            return
+        block_end = header_rows[block_number].start() if block_number < len(header_rows) else len(table_text)
+        body = table_text[header.end():block_end]
+        body = re.sub(r"^\s*\d+\s+of\s+\d+\s*$", "", body, flags=re.I | re.M)
+        supplied = list(_CROSSWALK_RECOMMENDATION.finditer(body))
+        remaining_name = _CROSSWALK_RECOMMENDATION.sub(" ", body)
+        if len(supplied) != len(codes) or _key(remaining_name) != _key(name):
+            result.errors.append(f"PDF page 1, recommendation table {block_number}: each milestone must have one explicit recommendation and the row must match the resident heading. Re-export the original PDF or use a structured milestone CSV.")
+            return
+        for column, (code, match) in enumerate(zip(codes, supplied), 1):
+            original = match.group(0)
+            try:
+                value, status = _crosswalk_recommendation(original)
+            except ValueError:
+                result.errors.append(f"PDF page 1, recommendation table {block_number}: {code} must contain a level or range from 0 through 5, or an explicit not-assessed marker.")
+                return
+            scores[code] = (value, status, original, block_number, column)
+    if set(scores) != set(expected):
+        result.errors.append(f"PDF page 1: found {len(scores)} labeled recommendations, but this General Pediatrics report requires all 22 milestones. Re-export the complete table before saving.")
+        return
+
+    records = []
+    for code in expected:
+        value, status, supplied, block_number, column = scores[code]
+        raw_fields = {"resident_name": name, "training_year": f"PGY{pgy}", "season": season,
+                      "specialty": "Pediatrics", "milestone": code, "recommendation": supplied}
+        row = {_key(key): value for key, value in raw_fields.items()}
+        table = _Table("PDF page 1 recommendations", {_key(key): key for key in raw_fields}, [])
+        record = _base(table, block_number, row, "milestones", "Pediatrics", result)
+        record.update(metric=code, value=value, unit="milestone level", form="EPA-to-milestone recommendations",
+                      record_mode="snapshot", pgy=pgy, half=half,
+                      source_format="pediatrics_epa_milestone_crosswalk",
+                      resident_name_requires_confirmation=False,
+                      source_locator=f"PDF page 1, recommendation table {block_number}, column {column}, milestone {code}")
+        record["values"] = {"assessment_status": status, "source_label": code,
+                            "source_recommendation": supplied, "recommendation_policy": "highest supplied level",
+                            "source_season": season, "half": half}
+        # This report prints a season and PGY but no dated coverage period.
+        # The upload cutoff therefore acts only as an explicitly marked as-of
+        # date. A broad roster-wide upload range is not source coverage.
+        record["import_context"] = {"selected_period_start": start, "selected_period_end": end}
+        _dates(record, row, end, end, snapshot=True)
+        records.append(record)
+    if specialty == "Medicine":
+        result.warnings.append("This crosswalk identifies General Pediatrics, so its milestone recommendations are labeled Pediatrics. Confirm the specialty before saving.")
+    result.warnings.append(f"Used the highest listed recommendation for each milestone. The report identifies {season} PGY{pgy}, recorded as {half}.")
+    result.records.extend(records)
+    result.profile = "Pediatrics EPA-to-milestone crosswalk PDF"
 
 
 def _read_pdf_milestone_tables(data: bytes) -> list[dict]:
@@ -887,10 +1003,13 @@ def _parse_pdf(data: bytes, kind: str, specialty: str, start: str, end: str, res
     if kind != "milestones":
         result.errors.append("This PDF report type cannot yet be imported reliably. Upload the corresponding New Innovations Excel, CSV, or TAB export. PDFs with explicit milestone codes and scores are supported in Milestones.")
         return
+    pages = _read_pdf_pages(data)
+    if pages and re.search(_PEDS_CROSSWALK_HEADING, pages[0], re.I):
+        _parse_pdf_peds_crosswalk(pages[0], specialty, start, end, result)
+        return
     if specialty == "Combined":
         result.errors.append("Select Medicine or Pediatrics before importing a milestone PDF.")
         return
-    pages = _read_pdf_pages(data)
     text = "\n".join(pages)
     if not text.strip():
         result.errors.append("This PDF has no selectable text. Upload a text-based PDF or a structured milestone CSV; scanned pages need review and transcription.")

@@ -1,84 +1,104 @@
-# Upload formats and compatibility templates
+# Upload formats
 
-Use the original New Innovations export whenever its layout is supported. You do not need to run a notebook, combine files on your computer, or prepare REDCap field names. Choose the report category and specialty, select the report's actual dates, upload it, and review the names, dates, and counts before saving.
+Use supported original New Innovations exports directly. One file is enough. Select the appropriate upload area, process the file, review the matched residents and save the results.
 
-**One file is enough.** Leave unused upload areas empty and select **Process 1 file**, or the button showing the number of selected files. Later uploads add to the saved resident record. Already saved entries are skipped. If a resident was deliberately skipped in an earlier shared report, the same file can be processed again after adding or matching that resident; only the newly matched entries are added.
+Residents are matched by name or a saved alias. You do not need to create a New Innovations resident ID or a REDCap record ID. Existing optional source IDs are recognized where available.
 
-Residents are identified by their names in your New Innovations exports. A resident ID, evaluation ID, or REDCap record number is not required. The app creates its own internal resident reference automatically and matches future uploads to the saved name or a confirmed name variation. Optional source IDs are still recognized when an older file contains them, but the blank templates and practice files do not ask you to create any.
+## File types and limits
 
-The import readers were built from the logic and column names in your supplied notebooks and tested with fictional fixtures. Actual New Innovations source spreadsheets and resident milestone PDFs were not supplied with those notebooks. A current deidentified example of each export is still needed to confirm its layout against the live system. The supplied REDCap PDF describes the existing dashboard; it is not a raw milestone export. The supplied Word example and report notebook guide the CCC summary's output layout.
+The app supports CSV, TSV, TAB, XLSX, binary XLS, and New Innovations HTML tables saved with an XLS extension. TAB exports can be UTF-16. Text-based milestone PDFs are also supported.
 
-## Supported files
+Each file can be up to 15 MB. A batch can contain up to 100 files and 60 MB total. Tabular limits are 100,000 data rows, 400 columns and 30 sheets/tables. Expanded XLSX content is limited to 100 MB. Milestone PDFs may have up to 150 pages.
 
-CSV, TSV, UTF-16 TAB, modern XLSX, binary XLS, and New Innovations HTML tables saved with an XLS extension are supported. Files are limited to 15 MB, 100,000 data rows, 400 columns, and 30 sheets/tables. XLSX expansion is limited to 100 MB. Text-based milestone PDFs may contain up to 150 pages. Excel formulas are never executed; only Excel's cached values are read. Check a warning if a workbook includes formulas.
+Excel formulas are not executed. The reader uses saved cell values. Check warnings when a workbook contains formulas.
 
-| Upload category | Original export columns recognized | What is retained |
-| --- | --- | --- |
-| Evaluations | `Last Name`, `First Name`, `Subject Status`, `Evaluator`, `Start Date`, `Subject Rotation`, `Session Name`, `Question`, `Comment`, `Overall Comments`; response/rating and evaluation ID when available | One record per logical evaluation, with its questions, responses, comments, evaluator, rotation, and dates |
-| Evaluations, older processed form | `Subject Name`, `Session Date`, `Session`, `Evaluator Name`, `Overall Comments`, and optional question triplets | Each evaluation and all available question content |
-| Self-assessments | `Subject Name`, `Subject Status`, `Evaluation Start Date`, `Evaluation End Date`, `Date Completed`, `Evaluator Name`, `Session`, `[Question N]`, `[Question N Response]`, `[Question N Comment]` | Every form and review date, including more than two reviews in a year |
-| Milestones | `resident_name`, `milestone`, `value`, with `date` or `report_dates`; `training_year` when available | Individual scores by explicit code and specialty; `x`/not assessed remains distinct from zero |
-| Procedures | `ResidentLastName`, `ResidentFirstName`, `DatePerformed`, `ResidentStatus`, `Procedure`, with optional source identifiers when present | Individual dated procedure entries, including repeated procedures on the same day |
-| Conference attendance | `Person`, `Category`, `Status`, `% Attended` | Each category's percentage and report period as a snapshot |
-| Duty hours | `Name`, `Start`, `End`, `Hours`, `Work Type`; or the hierarchical `Work Type` report with PGY and resident header rows | Individual shifts, reported hours, actual start/end times, and source details |
-| Duty-hour concerns | `Name`, `Status`, `Log Date`, `Rule`, `Description`, `Comments`, `Rotation`, `Work Type` | All source-reported concerns, without a five-entry limit |
+## Supported report categories
 
-Header capitalization, surrounding spaces, and common punctuation differences are normalized. The first 40 rows are checked for a report header. Names are retained for resident matching; a missing resident name blocks the affected file.
-
-## Dates, specialties, and counts
-
-Completion dates are preserved when present. Otherwise, the reader uses the relevant event date or source reporting dates. When the file has no date, the selected report end date can be used, but the preview identifies that fallback and requires review. If neither the source nor the upload supplies a valid date, the file cannot be accepted. Choose the actual period represented by a conference or milestone snapshot; a cumulative annual report should retain its annual coverage.
-
-Select Medicine or Pediatrics for a single-specialty export. Combined can be used for shared reports. In a combined file, a recognized `specialty` or `eval_type` column identifies the specialty of each row. The reader does not classify every unfamiliar rotation as Medicine. Milestone scores require an explicit Medicine or Pediatrics classification because the two programs use different sets of codes.
-
-A question-per-row evaluation file can contain many spreadsheet rows for one evaluation. The reader groups rows using the native evaluation ID when available together with the resident, form, evaluator, rotation, and dates. Without that ID, it uses the remaining context and shows a warning. Exact repeated question rows within that group are removed. Distinct responses, question wording, and overall comments are preserved. There is no 50-evaluation cap. If a source file already supplies event IDs, they are retained; you do not need to create them. Name-only procedure exports can retain multiple otherwise identical events on the same day.
-
-Conference percentages are snapshots. Overlapping reports cannot be added or averaged to obtain a valid attendance rate. Duty-hour totals and elapsed shift times are checked for discrepancies, but the app does not invent a compliance decision from an incomplete log. Source-reported concerns remain separate from your CCC assessment.
-
-## Yearly progress entered in the app
-
-Version 1.1.0 adds **Yearly progress** for information you enter directly. Choose the resident and PGY1, PGY2, PGY3, or PGY4; no companion upload file is required.
-
-| Yearly fields | How to enter them |
+| Report | Recognized source fields or layout |
 | --- | --- |
-| Pediatrics ITE score | Enter the score shown on the source result. |
-| Pediatrics expected pass rate (%) | Enter the reported expected pass rate, from 0 to 100. This is separate from a percentile. |
-| Medicine ITE score and percentile | Enter the two source values separately; the percentile is from 0 to 100. |
-| Adult and pediatric clinic patient tallies | Enter whole-number totals for that residency year through the selected progress date. |
-| Observed encounters 1–4 | Choose **Not recorded**, **Not completed**, or **Completed** for each encounter. |
+| Evaluations | Last Name, First Name, Subject Status, Evaluator, Start Date, Subject Rotation, Session Name, Question, Response, Comment and Overall Comments, with native evaluation IDs when available. |
+| Older processed evaluations | Subject Name, Session Date, Session, Evaluator Name, Overall Comments and available question fields. |
+| Self-assessments | Subject Name, source dates, Date Completed, evaluator/session fields and numbered Question, Response and Comment triplets. |
+| Milestone spreadsheets | resident_name, milestone, value, specialty and a date or report period, with training_year when supplied. The notebook's all_resident_milestones.csv is supported. |
+| New Innovations milestone PDFs | Labeled Program Subcompetency for Residents grids with the resident, specialty, training year and report dates. |
+| Pediatrics crosswalk PDFs | General Pediatrics EPAs and Milestones Crosswalk, with the name, FALL/SPRING, PGY and recommendations table on page one. |
+| Procedures | ResidentLastName, ResidentFirstName, DatePerformed, ResidentStatus and Procedure, with optional source identifiers. |
+| Conferences | Person, Category, Status and % Attended, with the actual reporting period. |
+| Duty hours | Name, Start, End, Hours and Work Type, or the supported hierarchical report with PGY/resident headings. |
+| Duty-hour concerns | Name, Status, Log Date, Rule, Description, Comments, Rotation and Work Type. |
 
-Set **Progress recorded through** to the date represented by the values, then select **Save yearly progress**. Blank values stay unrecorded; zero remains a recorded result. Each update preserves earlier values. Year-to-date clinic totals are saved as dated values and are not added to earlier totals.
+Headers are normalized for capitalization, surrounding spaces and common punctuation differences. The first 40 rows are checked for a tabular header.
 
-Each training year has its own PGY, academic year, and start/end dates. Use **Training-year dates** for an off-cycle period. Choose **Add another training year for this PGY** when a PGY year is repeated, so both years remain available separately.
+## Resident filtering and duplicate handling
 
-Values entered in older CCC reviews remain in those reviews and can be checked under **Values previously entered in CCC reviews**. Enter confirmed values into the yearly form when needed. An older Pediatrics percentile is not automatically used as an expected pass rate.
+Evaluation and milestone imports save only entries matched to the Administration roster. Other residents from those exports are ignored. If a roster resident has a different spelling in an export, add that spelling under Other names used in exports.
 
-Reports use the yearly values available through their evidence cutoff. A Final review preserves its evidence and yearly progress snapshots, so later entries do not change the finalized report.
+Exact saved entries are skipped. Reuploading a file can add a resident whose rows were previously omitted, without adding the already saved records again. Changed evidence is identified for review.
 
-## Milestone PDFs
+Question-per-row evaluation files are grouped into logical evaluations using a native evaluation ID when available, plus resident and source context. Without an ID, the reader uses form, evaluator, rotation and dates and displays a warning. Distinct question responses and comments remain preserved. Identical repeated question rows within one evaluation are removed.
 
-A PDF must contain selectable text, a resident name, and explicit rows with a milestone code next to one unambiguous score. Multiple score columns for the same code, scanned pages, unlabeled number sequences, and conflicting scores block that file. The old notebooks assigned the last 21 or 22 numbers by position; this reader does not reproduce that assumption. An inferred name or an apparently partial report generates a review warning.
+A file with parsing errors cannot be saved. Other readable files in the selected batch can still be processed.
 
-For an incompatible PDF, use `templates/milestones.csv`: enter one code per row, verify it against the source, and provide the resident, specialty, score, and dates. Keep missing/not-assessed scores marked `x` or `not assessed` instead of entering zero.
+## Dates and specialties
 
-## Templates and fictional examples
+Completion dates are used when available, followed by the relevant source event or reporting date. Source rotation dates are retained. A report cutoff determines which dated evidence is available to the committee.
 
-The `templates` folder contains blank CSV headers for all seven categories and the resident roster. Use ISO dates (`2026-09-30`) in compatibility files, and full dates plus times for shifts. Add further self-assessment question triplets by increasing the question number. The evaluation compatibility template represents one evaluation per row; its `text` field holds the narrative. When `value` counts the evaluation, use `1` with `unit` set to `assessments`. That count is not a rating. Original question responses remain separate source values.
+Fallback dates apply only when required dates are absent from the source. They do not limit historical imports. If neither the source nor the upload supplies a valid date, the file cannot be accepted.
 
-For an already prepared aggregate, the standardized long format can use `resident_name,date,metric,value,unit,record_mode,period_start,period_end`. Set `record_mode` to `snapshot` for a source summary rather than an individual event. For example, a cumulative procedure count must be labeled as a snapshot so it is not combined with individual procedure entries. Use the original event-level log whenever available.
+Use the appropriate Medicine or Pediatrics upload area. For mixed tabular files, recognized specialty fields can identify each row. In the CCC evaluation summaries, PEDS/pediatric rotations are placed in Pediatrics and other named rotations in Medicine according to the app's existing classification rules.
 
-The roster template uses `name, start_date, graduation_date, coach_name, status, aliases`. Only the name and training start date are required columns. Use the full name shown in New Innovations. Separate multiple aliases with semicolons. Set start and graduation dates for the resident's actual training plan. Existing roster files with an optional `external_id` column remain accepted, but leave it out for name-only exports. REDCap `record_id` and the app's internal `id` are not roster-upload columns.
+Medicine and Pediatrics milestone code sets remain separate.
 
-Everything in `examples` is fictional and is labeled by category. `examples/milestones.csv` includes both specialties, so select Combined to use its row-level `specialty` column. The conference example needs its reporting period selected in the upload screen because the original export style has no date column. Use the examples to practise the workflow before importing real files.
+## New Innovations milestone grids
 
-If any parsing error appears, do not accept the partially extracted candidates. Correct the file, use its compatibility template, or obtain a supported source export. A preview and a successful save are separate steps.
+The PDF must contain selectable text and a supported labeled milestone grid. The reader pairs each code with the score beneath its label. It checks the selected specialty and expected number of codes.
 
-## Word output and report dates
+The resident's printed training year and report dates are retained. A printed generation date can identify a snapshot available before the configured annual period ends, allowing current midyear scores to appear without waiting until the following June.
 
-**CCC summary** is the default under **Word reports**. It follows the supplied reference format, with the Medicine and Pediatrics evaluation tables starting on separate pages. Each logical evaluation keeps its date, rotation, evaluator, question wording, responses, and full comments. The report does not average the evaluation-count field into a rating or truncate long narratives.
+Unassessed values remain unassessed. Zero is a score. Ambiguous names, conflicting cells, missing codes or invalid values require correction before import.
 
-For one resident using current dashboard evidence, the default range is that resident's training start date through today. For several residents, each report defaults to its resident's own start date through the selected common end date. You can adjust the range or choose saved reviews. A selected saved review uses its own period, and a Final review uses its preserved evidence and yearly values.
+## Pediatrics EPA-to-milestone crosswalk
 
-Downloads are ordinary, editable `.docx` files with the resident's name and evidence end date in the filename. No export passphrase is required. A group download contains the individual Word files in a ZIP. App sign-in remains required, and data saved to either a public or private GitHub repository remains encrypted.
+For the General Pediatrics EPAs and Milestones Crosswalk format, the reader:
 
-See [README.md](README.md) for the daily workflow, report choices, and deployment instructions.
+- Reads the resident name, season and PGY from page one.
+- Reads only that page's recommendations table.
+- Saves the largest endpoint of an explicit range, so 2–3.5 becomes 3.5.
+- Preserves standalone values, including zero.
+- Assigns FALL to Midyear and SPRING to Year end for the printed PGY.
+- Checks all 22 labeled milestones before accepting the file.
+
+The later explanation and EPA-input pages do not supply milestone scores.
+
+These PDFs have no printed calendar date. Set Fallback period ends to the assessment date you want assigned. The date defaults to today. Use the actual historical date you intend for an older assessment.
+
+Each crosswalk is stored as a snapshot on that selected end date, with an explicit fallback marker. The original selected upload range is retained only as provenance. A cohort-wide fallback start date therefore does not exclude a younger resident's milestone scores from the report.
+
+A current FALL PGY2 crosswalk appears in the PGY2 MY milestone row. Finalized reviews retain the snapshots saved when they were finalized.
+
+## Other milestone PDFs
+
+A text-based PDF with an identifiable resident and explicit code/scalar rows can also be read. Unsupported layouts, scanned images and ambiguous number sequences need a structured milestone spreadsheet.
+
+Use templates/milestones.csv when a source cannot be read reliably. Enter one code per row with the resident, specialty, score and dates. Use x or not assessed for an unassessed value. Do not enter zero to represent missing information.
+
+## Templates and examples
+
+templates/ contains blank CSV headers for the report categories and roster. examples/ contains fictional practice data using Alex Example.
+
+Use ISO dates such as 2026-09-30. Duty shifts should include complete dates and times. Additional self-assessment question triplets can be added by increasing their question number.
+
+The roster template requires name and start_date. Optional columns include graduation_date, coach_name, status and aliases. Separate multiple aliases with a semicolon. Existing optional external_id columns remain supported.
+
+The standardized long format can represent a source summary with record_mode set to snapshot and its actual period_start and period_end. Conference percentages and cumulative counts retain that coverage. They are not summed with overlapping snapshots or prorated into smaller report windows.
+
+## Yearly entries and report output
+
+Enter exam results, clinic totals and observed encounters directly in Yearly progress. Set Progress recorded through to the date represented by those values. Blank remains unrecorded and zero remains an entered value.
+
+The CCC summary uses the notebook-based tables. Medicine and Pediatrics evaluation summaries start on separate pages. Evaluation comments omit question prompts and Comment prefixes. Resident-on-resident evaluator names are suppressed for the supported peer evaluation session names.
+
+The Evaluation flagger lets you select comments for a separate page after the specialty summaries. That page includes the evaluator, specialty designation and selected text without the triggering scores.
+
+Current reports default from the resident's start date through today. Saved reviews use their own period, and Final reviews use their preserved data. Word files are ordinary editable DOCX files. Report preview converts the generated Word file to PDF.
+

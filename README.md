@@ -1,168 +1,113 @@
-# Med Peds CCC Streamlit App
+# Med-Peds CCC dashboard
 
-This app replaces the repeated REDCap dashboards and Jupyter conversion steps with one resident record across a four-year Medicine-Pediatrics program. Administrators upload New Innovations reports, check the preview, and save. Reviewers track yearly progress, document the CCC assessment, and download editable Word summaries, detailed reports, or resident letters.
+Complete package version 1.2.0, November 23, 2026.
 
-**Version 1.1.0** adds a **Yearly progress** page for PGY1 through PGY4 and makes the **CCC summary** the default Word report. The summary follows the supplied Word example and report notebook, with Medicine and Pediatrics evaluation tables starting on separate pages. Downloads are ordinary `.docx` files; no export passphrase is required. App sign-in and encrypted GitHub storage remain in place.
+This complete deployment package includes the resident dashboard, encrypted GitHub storage, Word reports, PDF previews, evaluation comment selection, and the updated Pediatrics milestone importer.
 
-The app has been tested with fictional data and the input structures described in the supplied notebooks. Check a current export from each format you use against its preview before relying on that format for resident records. Project-specific verification is documented in `VALIDATION.md`.
+## Updating your existing app
 
-### Upload files as they become available
+Start with START_HERE.txt. Upload this package's files into the existing app repository, preserving their folders. Deploy app.py.
 
-Each of the four upload areas is optional. One file is enough. Add it to the appropriate area, choose the specialty and dates, and select **Process 1 file**. Review the parsed entries and resident matches, confirm them, and select **Save to resident dashboards**. The other upload areas can stay empty. The selected files clear after a successful save, ready for the next upload.
+Keep your current Streamlit Secrets, GitHub data repository, branch, data path, encryption key and password hashes unchanged. Existing encrypted records remain in that data repository. Do not run the first-time setup helper or create an empty dashboard when updating an app that already has saved records.
 
-Later uploads add to the saved evidence. You do not need to upload older reports again or supply a file for a category with no new information. Exact saved entries are skipped. A file containing only already saved entries no longer prevents another file in the same batch from adding new evidence. If none of the selected files has new entries, the app tells you and makes no save. Explicit complete replacements still require the existing replacement checks.
+The package contains application code and fictional examples. It does not contain your resident data or account credentials.
 
-If you previously skipped a resident in a shared report, you can upload the identical file again after adding or matching that resident. The app adds only the newly matched entries. The preview also identifies changed entries across files in the same batch, so any needed confirmation is available before saving.
+After committing the files, reboot the Streamlit app and refresh your browser. The first restart may take longer if LibreOffice Writer must be installed from packages.txt.
 
-### Remove a resident entered by mistake
+## Screens and workflow
 
-Open **Administration**, select **Residents**, and choose the resident under **Add or edit a resident**. Expand **Remove this resident**. Check the displayed name and the number of saved evidence entries and CCC reviews, confirm, and select **Remove resident**.
-
-Removal deletes that resident from the current roster and dashboards, together with their evidence, yearly progress, and CCC reviews, including saved versions. Other residents and shared uploads are preserved. The action is saved through the existing encrypted storage and conflict checks. A failed save leaves the last saved records intact and offers the existing recovery controls.
-
-Original encrypted upload files, older backups, prior repository versions, and audit history are retained. This action does not erase every historical copy of the resident's information. To retain a real resident's accessible history, change their status to **Inactive** rather than removing them.
-
-### Resident names, without manually assigned IDs
-
-Use the resident's name from New Innovations. No New Innovations ID or REDCap record ID is required. The roster, upload matching, and report selection all use names. The templates and fictional examples do not require you to supply resident or evaluation IDs.
-
-The app automatically creates a private internal reference when a resident is added. It keeps that resident's evidence and reviews connected over four years, even when their name is edited. You do not create or manage that reference. Add a prior name or another confirmed spelling under Other names used in exports, or confirm and remember the variation during upload. Ambiguous names need an explicit match before evidence is saved. An ambiguous roster CSV is stopped for review instead of creating another resident.
-
-Existing optional source references remain supported under a collapsed section for older imports. Keep a REDCap record ID separately only if it is needed to reconcile historical REDCap data during migration.
-
-### Public and private repositories
-
-Either a public or private GitHub repository can hold the encrypted records. Every dashboard and original-file payload the app saves is encrypted before upload in both cases. App sign-in, encryption keys, GitHub write permissions, and conflict checks still apply. No additional setting is required to use a public repository.
-
-### Fix for an existing Python 3.14 deployment
-
-For an app still using the original version 1.0.0 dependencies, version 1.0.1 changed `pandas==2.2.3` to `pandas==2.3.3`. That correction is included in version 1.1.0. The earlier pin has no Python 3.14 wheel. If your Streamlit build log shows Python 3.14 and pauses after resolving packages, update that line in the repository's `requirements.txt` and commit the change. Streamlit will rebuild the dependencies. The corrected package set installs from binary wheels on Python 3.14.8. This change does not require editing Secrets or recreating the app.
-
-The excerpted build log did not contain a final failure, so it cannot establish that this incompatibility was the only cause of the delay. See `VALIDATION.md` for the checks performed on the updated package.
-
-## What the team sees
-
-| Screen | Daily purpose |
+| Screen | Purpose |
 | --- | --- |
-| Program dashboard | See residents, training years, evaluation counts, latest evidence and reviews, and evidence that needs checking. |
-| Upload files | Four optional upload areas for evaluations, milestones, activities, and duty hours. Process one file or any available group, then review and save. |
-| Resident review | Read one resident's evidence, specialty-specific milestone history, CCC notes, and all eight checkpoints. |
-| Yearly progress | Record PGY1–4 exam results, clinic patient tallies, and four observed encounters per year, with dated histories. |
-| Word reports | Prepare a CCC summary, detailed progress report, or CCC letter for one resident or a group. Download editable Word files without an export passphrase. |
-| Administration | Add, edit, or remove residents, correct uploads, download encrypted backups, restore a backup, and get templates. |
+| Program dashboard | Review the resident roster, evidence counts and latest evaluation updates. |
+| Upload files | Add whichever Medicine, Pediatrics or administrative reports are available, then process and save the matched entries. |
+| Yearly progress | Enter exam results, clinic patient totals and observed encounters for PGY1 through PGY4. |
+| Resident review | Review evidence and milestone history, then document a dated CCC checkpoint. |
+| Evaluation flagger | Review low ratings and choose written comments for the CCC summary. |
+| Word reports | Prepare a CCC summary, progress report or CCC letter for one resident or a group. |
+| Report preview | View a generated Word report as a PDF and download either format. |
+| Administration | Manage residents and aliases, exclude incorrect uploads, back up or restore encrypted data, and download templates. |
 
-Medicine and Pediatrics retain their own forms, questions, scores, and source labels. They appear within the same resident record and are never averaged into one cross-specialty milestone score. Combined reports remain a separate classification.
+One upload is enough. Leave the other upload areas empty. Readable files can be processed even when another selected file cannot be read.
 
-## Daily administrator routine
+Only evaluation and milestone entries matched to your Administration roster are saved. Other residents from those exports are ignored. If an expected resident is missing, add the source spelling under that resident's Other names used in exports. You do not need to create a New Innovations ID or REDCap record ID.
 
-1. Download whichever reports are ready in New Innovations.
-2. Open **Upload files** and select Medicine, Pediatrics, or Combined. Choose the actual reporting dates.
-3. Add one or more files to the appropriate upload areas and leave unused areas empty. Select the appropriate report type within Evaluations, Activities, and Duty hours.
-4. Select **Process 1 file** or the button showing your selected file count. Read warnings and check the displayed entries. Files with parsing errors cannot be accepted.
-5. Confirm every resident name match. Save name variations only when you are sure they refer to the same resident. No record ID is required.
-6. Select **Save to resident dashboards** and wait for the saved message. Parsed data and, by default, copies of the original files are encrypted before GitHub receives them.
-7. Update **Yearly progress** when exam results, clinic tallies, or observed encounters change.
-8. Open **Resident review** to document the CCC assessment, then **Word reports** to prepare the summary.
+The app detects duplicate entries. Later uploads add new evidence, including historical exports. Reuploading a previously partial file can add newly matched residents without adding the saved entries again. Confirm changed evidence when the preview asks.
 
-Medicine and Pediatrics files can be uploaded in separate batches throughout the year. You do not need to prepare filenames, run notebooks, make midyear and year-end copies, or assemble an intermediate REDCap CSV.
+Up to 100 files and 60 MB total can be processed in a batch, with a 15 MB limit for each file. The app saves matched parsed records through encrypted storage. It does not retain whole original exports from new uploads.
 
-Read [INPUT_FORMATS.md](INPUT_FORMATS.md) for the exact supported columns and file types. `templates/` contains blank compatibility CSVs; `examples/` contains fictional practice files. A template is an alternative for an unsupported export, not a prerequisite for ordinary uploads.
+Read INPUT_FORMATS.md for supported inputs and date handling.
 
-## Yearly progress
+## Yearly progress and CCC reviews
 
-Open **Yearly progress**, choose the resident, and select **Residency year**: PGY1, PGY2, PGY3, or PGY4. The table at the top shows the saved values for each training year.
+Yearly progress contains Pediatrics ITE score and expected pass rate, Medicine ITE score and percentile, adult and pediatric clinic patient totals, and four observed encounter statuses per residency year.
 
-| Section | What to enter |
-| --- | --- |
-| Pediatrics in-training exam | The Pediatrics score and **expected pass rate (%)** supplied with the exam result. |
-| Medicine in-training exam | The Medicine score and **percentile** supplied with the exam result. |
-| Clinic patient tallies | Adult and pediatric patient totals for that residency year through the selected progress date. |
-| Observed encounters | A separate status for encounters 1, 2, 3, and 4: **Not recorded**, **Not completed**, or **Completed**. |
+Set Progress recorded through to the date represented by those values. Blank and zero have different meanings. Year-to-date clinic totals are dated totals, not additions to prior totals. Prior versions remain available for historical report cutoffs. Training-year dates can be adjusted for an off-cycle or repeated year.
 
-Set **Progress recorded through** to the date represented by the values, enter the information available, and select **Save yearly progress**. Leave unavailable numbers blank. A blank means not recorded; zero is an entered result. The Pediatrics expected pass rate and Medicine percentile are separate measures. An older Pediatrics percentile is not converted into an expected pass rate.
+CCC reviews have PGY1 through PGY4 Midyear and Year end checkpoints. Midyear defaults to six months and Year end to the full training year. Review dates and coverage can be adjusted. Save draft persists work in progress. Finalize review preserves the evidence, resident profile and yearly values used at that time. Later imports do not alter a finalized snapshot.
 
-Update the same training-year record as information arrives. Each save preserves the preceding values, so a report with an earlier evidence cutoff can use the values recorded through that date. Clinic tallies are year-to-date totals; successive updates are not added together.
+Removing a resident deletes their current roster entry, evidence, yearly progress and reviews. Existing backups, audit events and repository history can still contain prior versions. Use Inactive when you want to retain accessible history.
 
-For an off-cycle or repeated year, expand **Training-year dates** and set the actual academic year and start/end dates. If that PGY already has a saved record, choose **Add another training year for this PGY** under **Training year to update** to keep the repeated year separate.
+## Milestones
 
-Values previously entered in CCC reviews remain available under **Values previously entered in CCC reviews**. Check them and enter the appropriate values into the yearly form when needed. Reviewers and administrators can save yearly progress; viewers can read it.
+Medicine and Pediatrics have separate milestone tables.
 
-## Reviewing a resident
+The New Innovations grid reader matches labeled table cells to their scores and retains the printed report period and generation date when available. Scores available at midyear can appear in a current midyear summary.
 
-Choose a resident, then select the date range to inspect. The Overview shows available evidence and the most recent entered CCC assessment. Evidence contains the original feedback, question responses, evaluator, dates, and source location. Milestones keeps Medicine and Pediatrics separate and lets you follow one code over time.
+The General Pediatrics EPAs and Milestones Crosswalk reader uses page one. It reads the resident name, printed PGY and FALL or SPRING, then reads the recommendations table. A range such as 2–3.5 is saved as 3.5. Single values, including zero, are preserved. FALL maps to Midyear and SPRING to Year end.
 
-The eight checkpoints are PGY1 Midyear and Year end through PGY4 Midyear and Year end. Midyear defaults to the first six months of that training year. Year end defaults to the **full training year**. Adjust the period, meeting date, and academic year when the resident has an off-cycle start, leave, or a repeated training year. The academic year remains part of the review identity, so repeated PGY years do not overwrite one another. An administrator can set a current PGY override on the roster when elapsed time does not reflect the resident's actual training level.
+These crosswalk PDFs do not print a calendar date. Under Dates for reports without dates, set Fallback period ends to the assessment date you want assigned. It defaults to today. Use the appropriate historical date for an older report. The record is a snapshot on that date, and the original upload range is retained as provenance.
 
-The evidence cutoff uses the completion date when available, otherwise the source event or reporting date. For example, an evaluation completed January 5 is not available in a December 31 cutoff, even if the rotation occurred in December. Its rotation dates are retained. Select a cutoff that reflects the evidence available to the committee.
+## Evaluation flagger
 
-Review fields include strengths, growth areas, patterns over time, the CCC discussion and decision, an action plan, who will help, and follow-up. Additional sections retain recorded USMLE results, scholarship, advocacy, nursing/team feedback, and the committee's readiness assessment. Enter yearly exams, clinic tallies, and observed encounters on **Yearly progress**. These are entered program values; the app does not claim they were independently verified.
+An administrator can set separate cutoffs for competency/other ratings and EPA ratings. A valid rating at or below its cutoff is flagged. Missing ratings and administrative counts are ignored.
 
-**Save draft** persists work in progress. **Finalize review** preserves the selected evidence, yearly progress values, resident profile, entered assessment, and review history. Later uploads or yearly updates do not silently change those finalized snapshots. An administrator can reopen a finalized review with a reason; the previous final version remains available for export. This is a versioned review record, not a legally certified electronic signature.
+Reviewers and administrators can review comments and save the ones to include. The CCC summary places selected comments on their own page after the Medicine and Pediatrics evaluation summaries. That page contains the evaluator, specialty designation and selected comment text, without the triggering scores. Peer evaluator names remain suppressed.
 
-Missing files prompt an evidence check, not a performance judgment. Unassessed scores do not become zero. Conference percentages and cumulative summaries are shown with their actual source periods and are not added or averaged together. Source-reported duty-hour concerns are retained; the app does not infer compliance, days off, or readiness for independent practice from incomplete records.
+## Word reports and PDF previews
 
-## Word output
+CCC summary uses the notebook-based tables and separate Medicine and Pediatrics evaluation pages. It includes the imported milestones, yearly progress and saved CCC narrative. Evaluation comments are cleaned of question prompts and Comment prefixes. Resident-on-resident evaluator names are suppressed.
 
-Open **Word reports** and choose **One resident** or **Several residents**. **CCC summary** is the default document. It follows the supplied Word example and report notebook, including yearly exam results, clinic tallies, observed encounters, specialty-specific milestones, activity summaries, and the committee's recorded assessment. The Medicine and Pediatrics evaluation-summary tables each start on a separate page. Original question wording, responses, comments, and full narratives are retained without a 50-evaluation limit.
+For current evidence, the default report range is the resident's start date through today. Group reports use each resident's own start date unless you choose a shared start. Saved reviews use their own reporting period. Final reviews use their preserved snapshots.
 
-Choose **Progress report** for the alternative detailed report, with evidence counts, source periods, review history, and evaluation/self-assessment details. Full details are selected by default. **CCC letter** uses a saved review's entered assessment, strengths, growth areas, and action plan. The app does not invent a signature or choose a concern designation based on the time of year.
+Word downloads are ordinary editable DOCX files. No export passphrase is required.
 
-### Choose the evidence dates
+Use Preview Word reports as PDF in the sidebar, or Open PDF preview on Word reports. Choose the resident, document and date range, then select Prepare PDF preview. Conversion runs on the app server using LibreOffice Writer. The resulting PDF reflects the generated Word document. Word and PDF downloads are offered together.
 
-| Report selection | Dates used |
-| --- | --- |
-| One resident, current dashboard evidence | Defaults to that resident's training start date through today. Either date can be adjusted. |
-| Several residents, current dashboard evidence | Defaults to each resident's own training start date through the common **Evidence through** date, initially today. A shared start date is also available. |
-| A selected saved review | Uses that review's own evidence period. A Final review uses its preserved evidence and yearly progress snapshots. |
-| Group reports based on saved reviews | Choose **Latest saved review in this range**. Each resident's latest matching review supplies its assessment and evidence period. |
+Conversion uses private temporary files that are removed afterward. Prepared documents stay in the signed-in session and are cleared when the relevant context changes or the user signs out. They are not saved to GitHub by the preview feature.
 
-Current dashboard evidence is the default for CCC summaries and progress reports, including group reports. CCC letters require a saved review. For a group of letters, the app uses each resident's latest review with a meeting date in the selected range and identifies any resident without one.
+If conversion fails, the Word download remains available. Read the PDF reference code in the error message. Confirm packages.txt is beside app.py, then reboot after installing the update.
 
-### Download the Word files
+## First-time installation only
 
-Select **Prepare Word download**, then **Download Word file** or **Download Word files**. No export passphrase is requested. The files are ordinary, editable `.docx` documents that open directly in Word. A filename includes the evidence end date, resident name, and report type; a fictional example is `2026-10-20_Alex_Example_CCC_Summary.docx`. Multiple reports are downloaded together in a ZIP.
+Skip this section when updating your existing app.
 
-App sign-in is still required, and records stored in GitHub remain encrypted. Save and share the downloaded Word files through your program's usual secure workflow. Generated downloads are held in the signed-in session and are not written to GitHub or server disk by the app.
+### Repository and hosting
 
-## One-time deployment
+Place the complete project contents in the code repository. Keep ccc/, templates/ and .streamlit/config.toml in their supplied locations. requirements.txt installs Python dependencies. packages.txt installs LibreOffice Writer and the supplied font package.
 
-The daily administrator does not need to perform these setup steps. They are for the app owner or the person who maintains the Streamlit deployment.
+Use app.py as the Streamlit entry point. Python 3.12 was used for the current package checks. demo_app.py is an optional fictional preview with no uploads or saving.
 
-### 1. Prepare the repositories
+Code and encrypted data can use the same repository or separate repositories. Public and private data repositories are supported. Initialize the chosen data branch before connecting the app.
 
-Put the contents of this project in the GitHub repository used for the Streamlit app. The entry point is **`app.py`**, with the `ccc/`, `.streamlit/`, `templates/`, and other project folders retained. Do not upload the original notebooks or resident export files into the code repository.
+A fine-grained GitHub token needs Contents read and write access to the configured data repository. Keep the token and encryption key in Streamlit Secrets. Upload resident files through the app.
 
-Use your existing GitHub repository for the code and encrypted data, or select a separate data repository. Both public and private repositories are supported. Initialize the chosen repository with a README so its `main` branch exists. The app verifies the repository identity and branch before reading or saving records.
+### Create credentials for a new installation
 
-In a public repository, anyone can download the encrypted files. Reading their resident information requires the encryption key, which stays in Streamlit Secrets along with the GitHub token and account password hashes. Use the app's upload screen for resident files so encryption happens before they reach GitHub. Files manually uploaded or committed to GitHub are not encrypted by the app.
+In a local terminal:
 
-Create a fine-grained GitHub personal access token restricted to the data repository, with **Contents read and write** permission. The repository owner must also grant access required by any organization approval rules. Branch protection rules must permit these application writes. Keep the token in Streamlit Secrets.
-
-### 2. Generate the first account and encryption key
-
-Use Python 3.12 and a local terminal in the project folder. For a Windows PowerShell terminal:
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\python scripts/generate_secrets.py
-```
-
-For macOS or Linux:
-
-```bash
+~~~bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python scripts/generate_secrets.py
-```
+~~~
 
-Choose `setup`, then an administrator username, display name, and a passphrase of at least 14 characters. Password entry is hidden. The helper prints the account's Argon2id password hash and a new encryption key in a TOML settings block. It does not request your GitHub token or write a secrets file.
+On Windows, use py -3.12 to create the environment and .venv\Scripts\python for the remaining commands.
 
-Copy that block into **Streamlit app settings → Secrets**, and fill in the data repository and fine-grained token there. Do not paste secrets into a GitHub file or a chat message. Back up the encryption key in the program's password manager: losing it and every retained old key makes the stored records unreadable.
+Choose setup to generate the first administrator account and encryption key. Password entry is hidden. The helper prints a TOML configuration and does not write a secrets file or request a GitHub token.
 
-The supplied helper uses this layout; placeholders below are not working credentials:
+Copy the output into the app's Streamlit Secrets settings and fill in the repository and token. The following values are placeholders:
 
-```toml
+~~~toml
 [app]
 session_timeout_minutes = 30
 max_session_hours = 8
@@ -183,83 +128,29 @@ display_name = "Program Coordinator"
 role = "admin"
 password_hash = "ARGON2ID_HASH_FROM_THE_LOCAL_SETUP_HELPER"
 enabled = true
-```
+~~~
 
-For compatibility with the usual archive convention, `[github] repo` also accepts `OWNER/REPOSITORY` or a GitHub repository URL. If `path` is omitted, `base_path` supplies the parent of `ccc.enc`; its default is `encrypted`.
+The repo setting also accepts OWNER/REPOSITORY or a GitHub repository URL. Keep a secure backup of the encryption key. A new key cannot decrypt data encrypted with a different key unless the old key is retained in the supported key configuration.
 
-### 3. Deploy the actual app
+For a genuinely new installation, sign in and create an empty dashboard only after confirming that no existing data should be present at the configured path.
 
-In the intended Streamlit hosting account, select the code repository, branch, **`app.py`**, and Python 3.12 or 3.14. The pinned `requirements.txt` supplies the packages. Add the generated Secrets block and configure the intended Streamlit sharing settings. The app requires its own account password before any resident data are loaded.
-
-The hosting service processes decrypted records in memory after authentication. Choose an institution-approved hosting arrangement for the information involved; application encryption and passwords alone do not establish institutional approval or a particular compliance status. This package does not configure enterprise SSO, a reverse proxy, or an organizational access policy.
-
-### 4. Initialize and practise
-
-Sign in, choose **Create an empty resident dashboard**, and use Administration to add the roster. The empty-dashboard action appears only after the repository and branch are confirmed and the exact data file is absent. If existing records should already be there, verify the configured path before initializing.
-
-Use the fictional files before real exports. For a separate preview without credentials, run:
-
-```bash
-streamlit run demo_app.py
-```
-
-The preview contains only fictional data, offers no uploads or saving, and is separate from production. Deploy `app.py` for actual use.
-
-### 5. Add accounts
-
-Run the helper again and choose **`user`**. That mode generates only a new account block and leaves the encryption key unchanged. Add the account block to Streamlit Secrets.
+To add another account, run the helper in user mode. That mode generates an account block without changing the encryption key.
 
 | Role | Access |
 | --- | --- |
-| Admin | View and export; upload files; edit the roster, yearly progress, and settings; create, finalize, and reopen reviews; back up and restore records. |
-| Reviewer | View and export; update yearly progress; create and finalize CCC reviews. |
-| Viewer | View dashboards and export documents. |
+| Admin | View and export, upload, manage residents and settings, update yearly progress, select comments, manage reviews, and back up or restore data. |
+| Reviewer | View and export, update yearly progress, select comments, and create or finalize reviews. |
+| Viewer | View dashboards and export reports. |
 
-Use `enabled = false` to disable an account. Account removal, password changes, role changes, or disablement are checked on app reruns. Inactive sessions expire after 30 minutes by default, with an eight-hour maximum. A background check closes an active browser session after expiry; logout clears its application session data. Login attempts are limited per account and across the server process. Those limits reset on a process restart and do not coordinate multiple replicas; use hosting-level controls where needed.
+Set enabled = false in an account's Secrets configuration to disable it.
 
-## Saving, corrections and recovery
+## Saving and recovery
 
-All resident records, names, comments, source filenames, review fields, yearly progress and its history, name aliases, settings and audit events are encrypted before persistence. Original uploads, when retained, use separate encrypted files with random names. GitHub sees ciphertext and generic filenames/commit messages; it still sees repository/account metadata, sizes and change times. The encryption key and token stay outside the repository.
+Resident records, names, comments, settings, aliases, reviews and audit events are encrypted before persistence. The app accepts both public and private GitHub repositories. The encryption key and GitHub token stay outside the repository.
 
-Normal dashboard navigation reads the loaded signed-in session, so every tab change does not reload the entire archive. Saving is explicit and checks the GitHub file version originally loaded. If another person saved first, the app refuses to overwrite their change. On a connection problem, it shows **Not saved** and preserves the last confirmed state. Download the pending changes as an encrypted file if needed, then reload and reapply the changes to the newer version. There is no forced-overwrite button.
+Saves use the loaded GitHub file version. If another user saved first, the app refuses to overwrite that newer version. Failed saves display an unsaved status and preserve the last confirmed state. Recovery controls can provide an encrypted copy of pending changes.
 
-Repeated identical uploads are detected. Exact evidence duplicates are skipped while preserving separate event counts where the source supplies distinct IDs. Changed or ambiguous overlapping events are flagged for review. A complete corrected export can replace a selected earlier upload; the entire prior upload is excluded from live views. An administrator can also exclude an incorrect upload with a reason. Historical final review snapshots remain intact.
+Dashboard backups include the saved parsed records and reviews. Older versions of the app may have stored original uploads as separate encrypted objects. Those historical objects are not included in a dashboard backup. Preserve the data repository when they are needed.
 
-The encrypted dashboard backup includes parsed evidence, residents, yearly progress and its dated history, reviews and audit history. It **does not include the separately encrypted original file copies**. Those remain in the data repository; preserve that repository and the encryption key as part of your recovery plan. Restore previews the resident, evidence and review counts and requires explicit confirmation before replacing the dashboard. A backup restored into a different repository will not automatically move its original-file objects.
+This complete deployment bundle does not perform a data migration or change a live GitHub or Streamlit deployment. See VALIDATION.md for the checks performed before packaging.
 
-Data serialization is compressed inside the authenticated encryption envelope to reduce repeated four-year narrative and snapshot content. The limits are 64 MiB of expanded dashboard JSON, 8 MiB of compressed state, 15 MiB per original upload, and a 60 MiB/30-file upload batch. Exceeding a limit blocks the save rather than dropping old records. For a program that grows beyond this small-team archive design, move the persistence layer to an approved database/object store while keeping the app's resident model and UI.
-
-Retain previous encryption keys in `previous_keys` when introducing a new current key. New writes use the current key, and old keys can decrypt older files. Saving the dashboard does not re-encrypt every historical Git commit or original upload. Do not remove old keys while those objects are still needed. There is no automatic full-archive key-rotation command in this version.
-
-## Acceptance check before real data
-
-1. Confirm signed-out users see no resident data and each account has the intended role.
-2. Save the fictional roster and one example file, leaving the other upload areas empty. Refresh, sign out, sign back in, and confirm the records remain. Practise additional report categories as needed.
-3. Reimport the same file and confirm counts do not increase. Check a corrected export and the replacement preview.
-4. Check a current deidentified export from each distinct source format: Medicine evaluation, Pediatrics evaluation, SAR, each specialty's milestone PDF, procedure logger, conference attendance, shift log, and duty-hour violation report.
-5. Compare resident names, actual evidence dates, evaluation counts, question responses/comments, and scores against those exports. Confirm each specialty's PDF has explicit, unambiguous score labels.
-6. Save yearly progress at two dates and check a report with an earlier cutoff. Finalize a fictional review, add later evidence and yearly values, and verify the final report retains its saved snapshots.
-7. Open a fictional CCC summary, progress report, and letter in the Word version your team uses. Check the dates, resident filename, and separate evaluation pages. No export passphrase is needed. Test an encrypted backup restore in the test deployment.
-8. Use two signed-in sessions to confirm an older save is refused after the other session saves.
-
-Automated tests use synthetic inputs and mocked GitHub responses. Run them with:
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-Current project-specific verification results are documented in `VALIDATION.md`.
-
-## Existing REDCap records
-
-The supplied REDCap PDF depicts one populated PGY1 midyear dashboard, not a data dictionary or a complete four-year data export. The supplied Word example and report notebook guide the CCC summary layout. This package does not claim to have migrated the residents shown in the source material. Original New Innovations evidence can be imported directly, and earlier CCC narratives can be entered into their dated reviews. A bulk historical migration needs the REDCap CSV plus its data dictionary, with explicit resident and date mapping. See `MIGRATION_NOTES.md` for the preserved fields and changed behavior.
-
-## Source documentation
-
-- [Streamlit app secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)
-- [Streamlit native app testing](https://docs.streamlit.io/develop/concepts/app-testing)
-- [pandas 2.3.3 Python 3.14 compatibility](https://pandas.pydata.org/docs/whatsnew/v2.3.3.html)
-- [GitHub repository contents API](https://docs.github.com/en/rest/repos/contents)
-- [Cryptography Fernet and MultiFernet](https://cryptography.io/en/stable/fernet/)
-- [Argon2 password hashing](https://argon2-cffi.readthedocs.io/en/stable/howto.html)
