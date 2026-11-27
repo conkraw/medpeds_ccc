@@ -22,6 +22,7 @@ Excel formulas are not executed. The reader uses saved cell values. Check warnin
 | Milestone spreadsheets | resident_name, milestone, value, specialty and a date or report period, with training_year when supplied. The notebook's all_resident_milestones.csv is supported. |
 | New Innovations milestone PDFs | Labeled Program Subcompetency for Residents grids with the resident, specialty, training year and report dates. |
 | Pediatrics crosswalk PDFs | General Pediatrics EPAs and Milestones Crosswalk, with the name, FALL/SPRING, PGY and recommendations table on page one. |
+| EPA Tracker scores and comments PDFs | Competency scores and rotation comments, with the resident and 22 recommendation values on page one, followed by Comments by rotation with evaluator, completion date and original comment text. Upload through the milestone area. |
 | Procedures | ResidentLastName, ResidentFirstName, DatePerformed, ResidentStatus and Procedure, with optional source identifiers. |
 | Conferences | Person, Category, Status and % Attended, with the actual reporting period. |
 | Duty hours | Name, Start, End, Hours and Work Type, or the supported hierarchical report with PGY/resident headings. |
@@ -75,6 +76,22 @@ These PDFs have no printed calendar date. Set Fallback period ends to the assess
 Each crosswalk is stored as a snapshot on that selected end date, with an explicit fallback marker. The original selected upload range is retained only as provenance. A cohort-wide fallback start date therefore does not exclude a younger resident's milestone scores from the report.
 
 A current FALL PGY2 crosswalk appears in the PGY2 MY milestone row. Finalized reviews retain the snapshots saved when they were finalized.
+
+## EPA Tracker competency scores and rotation comments
+
+The milestone upload area also accepts the EPA Tracker PDF titled Competency scores and rotation comments. It reads the resident name, PGY, season and all 22 milestone recommendations from page one. The highest endpoint of a range is saved, with single values and zero retained.
+
+The reader follows Comments by rotation across every page. It keeps comments that continue onto the next page and collects the written comments within each evaluation. Question headings and wrapped question wording remain source metadata rather than Word comment text. Repeated page headers, footers, recommendation explanations, source filenames and printed evaluation references are excluded from the Word comments.
+
+The file creates milestone records and, when comments are present and selected, evaluation records. The latter use each evaluation's completion date. An explicitly labeled session date can be used when completion is unavailable. The report's overall comment window is retained as provenance and does not replace those evaluation dates.
+
+The recommendation scores do not have an assessment date printed in this format. They use the selected Fallback period ends as a point snapshot, marked as a fallback. The comment window does not establish when the milestone recommendation was assessed.
+
+An explicit no-evaluations message produces a warning and a score-only import. It is not saved as an evaluator comment. Roster matching and encrypted storage follow the existing upload workflow for both record categories.
+
+PDF evaluation references are namespaced separately from optional New Innovations IDs. Repeated PDF evaluations are checked for duplicates and revisions, even when the PDF reporting window changes. Exact automatic matching between a PDF and its underlying TAB evaluation is not guaranteed. Clear Include rotation comments from EPA Tracker PDFs if those comments were already imported from TAB files and only the scores are needed.
+
+The CCC summary uses the existing specialty evaluation tables for these comments. The source rotation determines Medicine or Pediatrics using the current classification rules. Supported resident-on-resident session names keep the evaluator anonymous. Comments are also available for manual selection in the Evaluation flagger, without treating milestone recommendation scores as ratings of that individual evaluation.
 
 ## Other milestone PDFs
 

@@ -1,8 +1,8 @@
 # Med-Peds CCC dashboard
 
-Complete package version 1.2.0, November 23, 2026.
+Complete package version 1.3.0, November 26, 2026.
 
-This complete deployment package includes the resident dashboard, encrypted GitHub storage, Word reports, PDF previews, evaluation comment selection, and the updated Pediatrics milestone importer.
+This complete deployment package includes the resident dashboard, encrypted GitHub storage, Word reports, PDF previews, evaluation comment selection, and the updated Pediatrics milestone importer. EPA Tracker reports titled Competency scores and rotation comments can now supply both scores and written evaluation comments through the milestone upload area.
 
 ## Updating your existing app
 
@@ -56,6 +56,18 @@ The New Innovations grid reader matches labeled table cells to their scores and 
 The General Pediatrics EPAs and Milestones Crosswalk reader uses page one. It reads the resident name, printed PGY and FALL or SPRING, then reads the recommendations table. A range such as 2–3.5 is saved as 3.5. Single values, including zero, are preserved. FALL maps to Midyear and SPRING to Year end.
 
 These crosswalk PDFs do not print a calendar date. Under Dates for reports without dates, set Fallback period ends to the assessment date you want assigned. It defaults to today. Use the appropriate historical date for an older report. The record is a snapshot on that date, and the original upload range is retained as provenance.
+
+### EPA Tracker scores and comments PDFs
+
+Open Upload files, expand Milestone reports, and choose Add Pediatrics milestone files. Upload the PDF, process it, review the resident match and save.
+
+The importer reads the recommendation table on page one and the Comments by rotation section across all pages. Each evaluation retains its evaluator, rotation, form and printed completion date. A labeled session date is used only when no completion date is available. The existing Word evaluation summaries show the written comments in their usual evaluator/comment layout, without question wording, score ranges, source filenames or evaluation references.
+
+The comments' date range is not treated as the assessment date for the recommendation scores. Set Fallback period ends for those scores as described above. FALL and SPRING still select the printed PGY's Midyear and Year end milestone checkpoints.
+
+Leave Include rotation comments from EPA Tracker PDFs checked to import both parts. Clear it to import scores only if those same evaluations are already saved from TAB files. PDF evaluation references and New Innovations identifiers can differ, so a PDF and a TAB file are not automatically treated as the same source evaluation. Repeated PDF evaluations with the same printed reference and content are skipped, including when a later PDF covers a different comment window.
+
+If the source report says no saved evaluations match the resident, there are no comments to extract. Its milestone scores can still be saved. Correct the resident link in EPA Tracker and export a new PDF to add the missing comments.
 
 ## Evaluation flagger
 

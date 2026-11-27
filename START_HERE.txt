@@ -1,6 +1,6 @@
 MED-PEDS CCC COMPLETE APP
-Version 1.2.0
-Packaged November 23, 2026
+Version 1.3.0
+Packaged November 26, 2026
 
 This ZIP contains the complete deployable application and the latest updates.
 You do not need to combine it with an earlier update ZIP.
@@ -26,7 +26,7 @@ UPDATE YOUR EXISTING APP
    may take longer while LibreOffice Writer and the PDF viewer are installed.
 
 5. Sign in with your existing account. Your saved roster should load.
-   Administration shows App version 1.2.0. If the app offers to create an
+   Administration shows App version 1.3.0. If the app offers to create an
    empty dashboard when you expect existing records, check that Secrets still
    point to the existing encrypted file before continuing.
 
@@ -35,6 +35,11 @@ The scripts/generate_secrets.py setup instructions are for a new installation.
 
 LATEST UPDATES INCLUDED
 
+- EPA Tracker Competency scores and rotation comments PDFs accepted in
+  the existing milestone upload area.
+- Original evaluation comments read across pages and placed in the regular
+  specialty evaluation tables of the Word CCC summary.
+- Optional scores-only import when those comments are already saved.
 - Sidebar button: Preview Word reports as PDF.
 - Word-to-PDF conversion using LibreOffice's server renderer.
 - Clear PDF error reference codes if the host cannot complete conversion.
@@ -63,6 +68,30 @@ appropriate assessment date when importing an older report.
 After saving, prepare a new CCC summary using Current dashboard date range.
 A current PGY2 FALL assessment appears in the PGY2 MY milestone row.
 Finalized CCC reviews keep the evidence snapshots saved when finalized.
+
+IMPORT THE COMBINED SCORES AND COMMENTS REPORT
+
+In Upload files, open Milestone reports and use Add Pediatrics milestone
+files for the EPA Tracker PDF titled Competency scores and rotation comments.
+Leave Include rotation comments from EPA Tracker PDFs checked, process the
+file, review the resident match, then save.
+
+Scores come from the first-page recommendations table. Written comments are
+read across all pages and appear with the evaluator, date and rotation in
+the existing Word evaluation summaries. Question wording and score ranges
+do not appear in the evaluation comment text.
+
+Comments keep their own completion dates. Set Fallback period ends to the
+appropriate assessment date for recommendation scores. The comment date
+window printed in the PDF is not the milestone assessment date.
+
+If the same evaluations are already saved from TAB files, clear the comments
+checkbox to import scores only. The two source formats use different
+evaluation references and cannot always be matched automatically.
+
+If the PDF says no saved evaluations match the resident, it contains no
+comments to import. The scores can still be saved. Correct the resident
+link in EPA Tracker and export a new PDF when the comments are available.
 
 PREVIEW A WORD REPORT
 

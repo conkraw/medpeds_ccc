@@ -536,7 +536,10 @@ def _canonical(record: dict, *, identity_only: bool = False) -> dict:
         keys.append("external_record_id")
     result = {k: record.get(k) for k in keys}
     if (record.get("category") == "milestones"
-            and record.get("source_format") == "pediatrics_epa_milestone_crosswalk"):
+            and record.get("source_format") in {
+                "pediatrics_epa_milestone_crosswalk",
+                "epa_tracker_competency_comments_pdf",
+            }):
         # The printed season and PGY identify this undated report's checkpoint.
         # Several historic reports may share the administrator's as-of date.
         # Keep those checkpoints distinct in both duplicate and revision checks.
@@ -730,6 +733,9 @@ def _import_records_into_candidate(result: dict, records: list[dict], source: di
     source = copy.deepcopy(source)
     source.setdefault("id", new_id())
     source.update({"active": True, "uploaded_at": now_iso(), "uploaded_by": actor, "record_count": len(prepared)})
+    # A milestone PDF can also supply evaluation comments. Keep its upload
+    # kind for replacement checks, but describe the evidence actually saved.
+    source["record_categories"] = sorted({rec["category"] for rec in prepared})
     source["replaces"] = replace_source_id
     for rec in prepared:
         rec["id"] = new_id()

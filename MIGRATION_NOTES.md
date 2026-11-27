@@ -30,6 +30,10 @@ Residents are matched by name or a confirmed alias. The app creates its own inte
 
 New Innovations milestone grids are read by their labeled cells. The new Pediatrics crosswalk uses its first-page recommendation table and saves the maximum of each printed range. Missing scores remain distinct from zero.
 
+EPA Tracker Competency scores and rotation comments PDFs can be uploaded through Milestone reports. The app saves their recommendation scores and original evaluation comments as separate evidence categories. No archive migration is required. Existing sources without category metadata remain readable.
+
+If their comments have already been imported from TAB files, clear Include rotation comments from EPA Tracker PDFs to add only the milestone scores. The PDF and TAB exports can use different evaluation references.
+
 Conference percentages and cumulative summaries retain their source periods. Duty-hour concerns remain source-reported evidence. The committee enters its assessment in a CCC review.
 
 Finalized reviews retain their saved evidence, resident profile and yearly values. An authorized reopening preserves the prior final version.

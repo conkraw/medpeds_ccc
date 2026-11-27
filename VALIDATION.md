@@ -2,13 +2,30 @@
 
 ## Current update
 
-Version 1.2.0, packaged November 23, 2026, was checked with Python 3.12 and the pinned application dependencies. The version label identifies this complete bundle and does not change the stored data schema.
+Version 1.3.0, packaged November 26, 2026, was checked with Python 3.12 and the pinned application dependencies. The version label identifies this complete bundle and does not change the stored data schema.
 
-The focused internal suite passed 210 tests plus 8 subtests. It covered PDF conversion, preview navigation and session isolation, upload parsing, the new Pediatrics crosswalk, resident matching, checkpoint identity, duplicate handling, report generation and upload batching.
+The focused internal suite passed 260 tests plus 8 subtests. It covered PDF conversion, preview navigation and session isolation, upload parsing, the Pediatrics crosswalk, the combined EPA Tracker scores/comments report, resident matching, checkpoint identity, duplicate handling, report generation and upload batching.
 
 This is a complete deployment bundle. Internal test files and development-only fixtures are not included in the ZIP.
 
-The final staged package passed import checks for all 15 application modules, production and demo startup through Streamlit AppTest, and a real four-page CCC Word-to-PDF conversion. These checks used the packaged file layout.
+The final staged package passed import checks for all 15 application modules, production and demo startup through Streamlit AppTest, and a real five-page fictional CCC Word-to-PDF conversion. These checks used the packaged file layout.
+
+## Combined competency report checks
+
+Both supplied EPA Tracker Competency scores and rotation comments PDFs were checked through parsing, resident matching, saving, the existing Word evaluation tables and production PDF conversion.
+
+| Sample layout | Milestone values | Evaluations | Written comments |
+| --- | ---: | ---: | ---: |
+| Explicit no-matching-evaluations report | 22 | 0 | 0 |
+| Report with comments across five pages | 22 | 7 | 29 |
+
+Every supplied written comment reached the Word evaluation section under the existing name-cleanup rules. The current midyear table retained all 22 milestone values. Evaluator, date and rotation headers remained in their usual layout. Question prompts, recommendation ranges, filenames and evaluation references were absent from the Word comment text.
+
+The two generated Word reports converted successfully to PDF. The comment table was visually checked for clipping and missing rows. Existing empty specialty placeholder pages remain when that specialty has no comments in the supplied evidence.
+
+The Streamlit checks exercised the real milestone upload area with a selectable fictional PDF. They confirmed mixed-category saving and history, score-only import, roster exclusion, duplicate reupload, and adding previously omitted comments without repeating milestone scores. Parser tests cover wrapped prompts, comments continuing across pages, invalid metadata and date rejection, explicit missing-comments messages, distinct milestone checkpoint identity and repeated evaluation references across changed PDF windows.
+
+The PDF and TAB formats can use different evaluation identifiers. Their comments are not fuzzy-merged. The optional comment checkbox supports a scores-only import when the underlying evaluations were already imported from TAB files.
 
 ## Milestone checks
 

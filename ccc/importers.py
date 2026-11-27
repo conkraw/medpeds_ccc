@@ -999,11 +999,300 @@ def _parse_pdf_milestone_tables(data: bytes, specialty: str, start: str, end: st
     result.profile = "New Innovations milestone grid PDF"
 
 
+_EPA_TRACKER_FORMAT = "epa_tracker_competency_comments_pdf"
+
+
+def _read_epa_tracker_lines(data: bytes) -> list[dict]:
+    """Retain text style so wrapped question prompts stay out of comments."""
+    import pdfplumber
+
+    lines, total = [], 0
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        if len(pdf.pages) > MAX_PDF_PAGES:
+            raise ValueError("The PDF contains too many pages. Upload smaller reports.")
+        for number, page in enumerate(pdf.pages, 1):
+            for row in page.extract_text_lines():
+                text = _text(row.get("text"))
+                chars = [char for char in row.get("chars", []) if _text(char.get("text"))]
+                if not text or not chars:
+                    continue
+                total += len(text)
+                if total > MAX_PDF_TEXT or len(lines) >= MAX_ROWS:
+                    raise ValueError("The PDF contains too much text. Upload smaller reports.")
+                bold_chars = sum(bool(re.search(r"bold|demi|black", char["fontname"], re.I)) for char in chars)
+                lines.append({
+                    "text": text, "page": number, "top": float(row["top"]),
+                    "bottom": float(row["bottom"]), "height": float(page.height),
+                    "bold": bold_chars >= len(chars) * .8,
+                    "size": sum(float(char["size"]) for char in chars) / len(chars),
+                })
+    return lines
+
+
+def _epa_tracker_score_cells(text: str, specialty: str) -> list[tuple[str, float | None, str, str]]:
+    """Pair explicit code rows with the values in their own domain block."""
+    heading = re.search(r"^APPD recommendations as reported\s*$", text, re.M)
+    boundary = re.search(r"^Scores and ranges are copied from the uploaded report\.", text, re.M)
+    if not heading or not boundary or heading.end() >= boundary.start():
+        raise ValueError("The EPA Tracker recommendations table could not be identified.")
+    body = text[heading.end():boundary.start()]
+    code_pattern = r"\b(?:PC|MK|SBP|PBLI|PROF?|ICS)\d+\b"
+    headers = [(match, re.findall(code_pattern, match.group(0), re.I))
+               for match in re.finditer(r"^.*$", body, re.M)
+               if re.search(code_pattern, match.group(0), re.I)]
+    expected = [f"{domain}{n}" for domain, count in _PDF_MILESTONE_GROUPS[specialty]
+                for n in range(1, count + 1)]
+    scores = {}
+    for index, (header, labels) in enumerate(headers):
+        codes = [_milestone_code(label) for label in labels]
+        if (len(set(codes)) != len(codes)
+                or any(code not in expected or code in scores for code in codes)):
+            raise ValueError("The EPA Tracker recommendations contain repeated or unexpected milestone labels.")
+        last = headers[index + 1][0].start() if index + 1 < len(headers) else len(body)
+        supplied = list(_CROSSWALK_RECOMMENDATION.finditer(body[header.end():last]))
+        if len(supplied) != len(codes):
+            raise ValueError("The EPA Tracker milestone labels and recommendation cells do not align.")
+        for code, value in zip(codes, supplied):
+            original = value.group(0)
+            try:
+                score, status = _crosswalk_recommendation(original)
+            except ValueError:
+                raise ValueError("The EPA Tracker recommendations must be levels or ranges from 0 through 5.") from None
+            scores[code] = (score, status, original)
+    if set(scores) != set(expected):
+        raise ValueError(f"The EPA Tracker report requires all {len(expected)} labeled {specialty} milestones.")
+    return [(code, *scores[code]) for code in expected]
+
+
+def _epa_tracker_comment_text(lines: list[dict]) -> str:
+    """Join layout wraps, preserving visible paragraph gaps within a comment."""
+    parts = []
+    previous = None
+    for line in lines:
+        separator = ("\n\n" if previous and line["page"] == previous["page"]
+                     and line["top"] - previous["bottom"] > max(8, previous["size"]) else " ")
+        parts.append((separator if parts else "") + line["text"])
+        previous = line
+    return "".join(parts).strip()
+
+
+def _epa_tracker_evaluation(block: dict, context: dict, result: ParseResult) -> dict:
+    metadata = " ".join(block["metadata"])
+    details = re.fullmatch(
+        r"Evaluator:\s*(.*?)\s+Session date:\s*(.*?)\s*\|\s*Date completed:\s*(.*?)\s+"
+        r"Source:\s*(.*?)\s*\|\s*Evaluation reference:\s*(eval_[a-f0-9]{64})",
+        metadata, re.I,
+    )
+    if not details:
+        raise ValueError("The EPA Tracker evaluation metadata could not be read completely. Re-export the PDF.")
+    evaluator, supplied_session, supplied_completed, source_files, reference = details.groups()
+    missing = {"", "na", "none", "missing", "unavailable", "notavailable", "notrecorded", "notreported", "unknown"}
+    session = _date(supplied_session)
+    completed = _date(supplied_completed)
+    for supplied, parsed in ((supplied_session, session), (supplied_completed, completed)):
+        if not parsed and _key(supplied) not in missing:
+            raise ValueError("The EPA Tracker evaluation contains an invalid source date.")
+    observed = completed or session
+    if not observed or observed != block["date"]:
+        raise ValueError("The EPA Tracker evaluation heading and source dates do not agree.")
+    if not context["comment_start"] <= observed <= context["comment_end"]:
+        raise ValueError("The EPA Tracker evaluation date falls outside its printed comment period.")
+    status = ""
+    status_match = re.fullmatch(r"(.*?)\s*\(([^()]*)\)", evaluator)
+    if status_match:
+        evaluator, status = status_match.groups()
+    if _key(evaluator) in missing:
+        evaluator = ""
+    questions = []
+    for question in block["questions"]:
+        comment = _epa_tracker_comment_text(question["lines"])
+        if not comment:
+            raise ValueError("The EPA Tracker report has a question without readable comment text. Re-export the PDF.")
+        item = {"number": question["number"], "text": " ".join(question["prompt"]),
+                "response": "", "comment": comment}
+        if item not in questions:
+            questions.append(item)
+    if not questions:
+        raise ValueError("The EPA Tracker evaluation contains no readable comments.")
+    raw = {"resident_name": context["name"], "Session Name": block["form"],
+           "Evaluator": evaluator, "Evaluator Status": status, "Subject Rotation": block["rotation"],
+           "Session Date": supplied_session, "Date Completed": supplied_completed,
+           "EPA Tracker evaluation reference": reference, "Source files": source_files}
+    row = {_key(key): value for key, value in raw.items()}
+    table = _Table("EPA Tracker PDF", {_key(key): key for key in raw}, [])
+    record = _base(table, block["page"], row, "evaluations", context["specialty"], result)
+    _dates(record, row, "", "", event_names=("Session Date",))
+    # Recognized missing-date markers were validated above. They are not
+    # malformed dates and should not trigger the generic date-review warning.
+    record["source_date_needs_review"] = False
+    record.update(
+        form=block["form"], session_name=block["form"], metric="Evaluation",
+        value=1, unit="assessments", questions=questions, overall_comment="",
+        text="\n\n".join(_unique_text([question["comment"] for question in questions])),
+        external_record_id="epa-tracker:" + reference,
+        source_eval_reference=reference, source_format=_EPA_TRACKER_FORMAT,
+        source_comment_period_start=context["comment_start"],
+        source_comment_period_end=context["comment_end"],
+        source_comment_date_basis=context["date_basis"],
+        source_locator=f"PDF page {block['page']}, evaluation {reference}",
+        source_report_pgy=context["pgy"], source_report_season=context["season"],
+        source_report_resident_name=context["source_name"],
+    )
+    return record
+
+
+def _parse_epa_tracker_comments_pdf(data: bytes, pages: list[str], specialty: str,
+                                  start: str, end: str, result: ParseResult) -> None:
+    """Read scores and structured comments from the known EPA Tracker export."""
+    first = pages[0]
+    header = re.search(r"^EPA TRACKER\s*\|\s*(.+)$", first, re.M)
+    named = re.search(r"^Competency scores and rotation comments\s*\n([^\n]+)\n", first, re.M)
+    program = re.search(r"^(.+?)\s*\|\s*(FALL|SPRING)\s*\|\s*PGY\s*([1-4])\s*$", first, re.I | re.M)
+    period = re.search(r"^Comment dates:\s*(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2}),\s*inclusive\s*$",
+                       first, re.M)
+    basis = re.search(r"^Comment date basis:\s*(.+)$", first, re.M)
+    if not all((header, named, program, period, basis)) or _key(header.group(1)) != _key(named.group(1)):
+        raise ValueError("The EPA Tracker resident, season, PGY or comment dates could not be read reliably.")
+    name = " ".join(named.group(1).split())
+    if not any(char.isalpha() for char in name) or re.search(r"\d", name):
+        raise ValueError("The EPA Tracker report has no reliable resident name.")
+    comment_start, comment_end = _date(period.group(1)), _date(period.group(2))
+    if not comment_start or not comment_end or comment_start > comment_end:
+        raise ValueError("The EPA Tracker report has invalid comment dates.")
+    for page in pages:
+        running = re.findall(r"^EPA TRACKER\s*\|\s*(.+)$", page, re.M)
+        if running != [header.group(1)]:
+            raise ValueError("The EPA Tracker PDF must contain one resident and a matching header on every page.")
+    source_specialty = ("Pediatrics" if re.search(r"\bpediatr|\bpeds\b", program.group(1), re.I)
+                        else "Medicine" if re.search(r"\bmedicine\b", program.group(1), re.I)
+                        else specialty)
+    if source_specialty == "Combined":
+        raise ValueError("The EPA Tracker report needs an explicit Medicine or Pediatrics specialty.")
+    context = {
+        "name": name, "specialty": source_specialty, "pgy": int(program.group(3)),
+        "season": program.group(2).upper(), "comment_start": comment_start,
+        "comment_end": comment_end, "date_basis": basis.group(1).strip(), "source_name": "",
+    }
+    source_name = re.search(r"^Name on source report:\s*(.+)$", first, re.M)
+    if source_name:
+        context["source_name"] = source_name.group(1).strip()
+    half = "Midyear" if context["season"] == "FALL" else "Year end"
+    records = []
+    for code, score, status, original in _epa_tracker_score_cells(first, source_specialty):
+        raw = {"resident_name": name, "milestone": code, "recommendation": original,
+               "training_year": context["pgy"], "season": context["season"]}
+        row = {_key(key): value for key, value in raw.items()}
+        table = _Table("EPA Tracker recommendations", {_key(key): key for key in raw}, [])
+        record = _base(table, 1, row, "milestones", source_specialty, result)
+        record.update(
+            metric=code, value=score, unit="milestone level", form="EPA-to-milestone recommendations",
+            pgy=context["pgy"], half=half, source_format=_EPA_TRACKER_FORMAT,
+            source_comment_period_start=comment_start, source_comment_period_end=comment_end,
+            source_report_resident_name=context["source_name"],
+            source_locator=f"PDF page 1, APPD recommendation {code}",
+            resident_name_requires_confirmation=False,
+            import_context={"selected_period_start": start, "selected_period_end": end},
+        )
+        record["values"] = {"assessment_status": status, "source_label": code,
+                            "source_recommendation": original, "recommendation_policy": "highest supplied level",
+                            "source_season": context["season"], "half": half}
+        _dates(record, row, end, end, snapshot=True)
+        records.append(record)
+
+    lines = _read_epa_tracker_lines(data)
+    anchors = [i for i, line in enumerate(lines) if line["text"] == "Comments by rotation"]
+    if len(anchors) != 1:
+        raise ValueError("The EPA Tracker comments section could not be identified.")
+    evaluations, seen, current, question, rotation = [], {}, None, None, ""
+    no_comments = False
+
+    def finish() -> None:
+        nonlocal current, question
+        if current is None:
+            return
+        record = _epa_tracker_evaluation(current, context, result)
+        reference = record["external_record_id"]
+        payload = {key: record[key] for key in ("date", "form", "evaluator", "evaluator_status", "rotation", "questions")}
+        if reference in seen and seen[reference] != payload:
+            raise ValueError("The EPA Tracker PDF contains conflicting copies of one evaluation.")
+        if reference not in seen:
+            seen[reference] = payload
+            evaluations.append(record)
+        current, question = None, None
+
+    for line in lines[anchors[0] + 1:]:
+        text, size = line["text"], line["size"]
+        if (re.match(r"^EPA TRACKER\s*\|", text, re.I) and line["top"] < 65
+                or re.match(r"^EPA Tracker\s*\|.*\bPage\s+\d+$", text, re.I)
+                and line["top"] > line["height"] - 50):
+            continue
+        if text.startswith("No saved evaluations match the selected resident."):
+            no_comments = True
+            continue
+        # The original report has explanatory text before the first rotation.
+        if current is None and not rotation and not line["bold"] and size < 8.5:
+            continue
+        if line["bold"] and abs(size - 11) < .35:
+            finish()
+            rotation = text
+            continue
+        event = re.fullmatch(rf"({_DATE_TOKEN})\s*(?:\([^)]*\))?\s*\|\s*(.+)", text)
+        if event and line["bold"] and abs(size - 9.3) < .35:
+            finish()
+            if not rotation or not _date(event.group(1)):
+                raise ValueError("The EPA Tracker evaluation is missing its rotation or a valid date.")
+            current = {"date": _date(event.group(1)), "form": event.group(2).strip(),
+                       "rotation": rotation, "page": line["page"], "metadata": [], "questions": []}
+            question = None
+            continue
+        prompt = re.match(r"^Question\s+(\d+):\s*(.*)$", text)
+        if prompt and line["bold"] and abs(size - 8.7) < .35:
+            if current is None:
+                raise ValueError("The EPA Tracker comment is missing its evaluation heading.")
+            question = {"number": prompt.group(1), "prompt": [prompt.group(2)], "lines": []}
+            current["questions"].append(question)
+            continue
+        if current is not None and question is None:
+            if line["bold"] and abs(size - 9.3) < .35:
+                current["form"] += " " + text
+            elif not line["bold"] and abs(size - 8) < .35:
+                current["metadata"].append(text)
+            else:
+                raise ValueError("The EPA Tracker evaluation metadata uses an unsupported layout.")
+            continue
+        if question is not None:
+            if line["bold"] and abs(size - 8.7) < .35 and not question["lines"]:
+                question["prompt"].append(text)
+            elif abs(size - 9.2) < .3:
+                question["lines"].append(line)
+            else:
+                raise ValueError("The EPA Tracker question and comment text could not be separated reliably.")
+            continue
+        raise ValueError("The EPA Tracker comments section has an unsupported line. Re-export the PDF.")
+    finish()
+    if no_comments and evaluations:
+        raise ValueError("The EPA Tracker report contains conflicting comment availability information.")
+    if not evaluations and not no_comments:
+        raise ValueError("The EPA Tracker comments could not be read. Re-export the report before importing.")
+    if no_comments:
+        result.warnings.append("This PDF says no saved evaluations match the selected resident. Its milestone scores were read, but it contains no evaluation comments to add. Check the resident link in EPA Tracker and export again if comments were expected.")
+    else:
+        result.warnings.append(f"Read {len(evaluations)} evaluation(s) with their source dates, evaluators, rotations and written comments.")
+    result.warnings.append("Milestone recommendations use the highest supplied level. The printed comment period is not a milestone assessment date, so the selected reporting period end is used for the milestone snapshot.")
+    if specialty != "Combined" and specialty != source_specialty:
+        result.warnings.append(f"The EPA Tracker report identifies {source_specialty}. Its source specialty is retained.")
+    result.records.extend([*records, *evaluations])
+    result.profile = "EPA Tracker competency recommendations and comments PDF"
+
+
 def _parse_pdf(data: bytes, kind: str, specialty: str, start: str, end: str, result: ParseResult) -> None:
     if kind != "milestones":
         result.errors.append("This PDF report type cannot yet be imported reliably. Upload the corresponding New Innovations Excel, CSV, or TAB export. PDFs with explicit milestone codes and scores are supported in Milestones.")
         return
     pages = _read_pdf_pages(data)
+    if pages and re.search(r"^Competency scores and rotation comments\s*$", pages[0], re.M):
+        _parse_epa_tracker_comments_pdf(data, pages, specialty, start, end, result)
+        return
     if pages and re.search(_PEDS_CROSSWALK_HEADING, pages[0], re.I):
         _parse_pdf_peds_crosswalk(pages[0], specialty, start, end, result)
         return

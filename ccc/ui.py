@@ -68,6 +68,21 @@ def _pretty_time(value: str) -> str:
         return "Not saved yet"
 
 
+def _source_categories(source: dict) -> set[str]:
+    """Read mixed upload categories while retaining legacy source labels."""
+    categories = source.get("record_categories")
+    if isinstance(categories, list):
+        return {category for category in categories if category in m.CATEGORIES}
+    return {source.get("kind", "")}
+
+
+def _source_report_label(source: dict) -> str:
+    categories = _source_categories(source)
+    if {"milestones", "evaluations"}.issubset(categories):
+        return "Milestones and evaluation comments"
+    return ", ".join(m.CATEGORIES[category] for category in m.CATEGORIES if category in categories) or str(source.get("kind", ""))
+
+
 def _configure() -> None:
     st.set_page_config(page_title="Med-Peds Resident Progress", page_icon="📋", layout="wide",
                        initial_sidebar_state="expanded")
@@ -410,7 +425,7 @@ def _program_dashboard(state: dict) -> None:
     if state["sources"]:
         with st.expander("Recent uploads"):
             items = sorted(state["sources"], key=lambda x: x.get("uploaded_at", ""), reverse=True)[:10]
-            st.dataframe(pd.DataFrame([{"File": s.get("name", ""), "Category": m.CATEGORIES.get(s.get("kind"), ""),
+            st.dataframe(pd.DataFrame([{"File": s.get("name", ""), "Category": _source_report_label(s),
                                          "Specialty": s.get("specialty", ""), "Saved": _pretty_time(s.get("uploaded_at", "")),
                                          "Entries at upload": s.get("record_count", 0), "Status": "Active" if s.get("active", True) else "Excluded"} for s in items]),
                          hide_index=True, width="stretch")
@@ -948,7 +963,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         history = []
         seen_files = set()
         for source in sorted(state["sources"], key=lambda item: item.get("uploaded_at", ""), reverse=True):
-            if (not source.get("active", True) or source.get("kind") not in {"evaluations", "self_assessments"}
+            if (not source.get("active", True) or not _source_categories(source).intersection({"evaluations", "self_assessments"})
                     or not source.get("record_count", 0)):
                 continue
             file_key = (source.get("sha256") or source["id"], source.get("kind"), source.get("specialty"))
@@ -956,7 +971,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 continue
             seen_files.add(file_key)
             history.append({"File": source.get("name", ""), "Specialty": source.get("specialty", ""),
-                            "Report": m.CATEGORIES.get(source.get("kind"), ""),
+                            "Report": _source_report_label(source),
                             "Last saved": _pretty_time(source.get("uploaded_at", ""))})
         if history:
             st.dataframe(pd.DataFrame(history), hide_index=True, width="stretch")
@@ -964,7 +979,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         else:
             st.caption("No saved evaluation files to show.")
     with st.expander("Milestone reports"):
-        st.caption("Upload New Innovations milestone reports or the new General Pediatrics EPAs and Milestones Crosswalk PDFs. The app fills the milestone tables in your CCC Word summary.")
+        st.caption("Upload New Innovations milestone reports, General Pediatrics crosswalk PDFs, or EPA Tracker PDFs titled Competency scores and rotation comments. The app imports the milestone scores and any evaluation comments in those reports.")
         for specialty, widget, column in zip(("Medicine", "Pediatrics"), ("milestones", "peds_milestones"), st.columns(2)):
             with column, st.container(border=True):
                 st.subheader(specialty + " milestones")
@@ -973,11 +988,16 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                                          key=f"files_{widget}_{generation}")
                 groups.append(("milestones", files, specialty))
                 if specialty == "Pediatrics":
-                    st.caption("For a crosswalk PDF, the app reads the resident's name and recommendations table on page one. A range such as 2–3.5 is saved as 3.5. FALL goes in Midyear and SPRING in Year end for the printed PGY.")
+                    st.caption("The app reads the name and recommendation scores from page one. A range such as 2–3.5 is saved as 3.5. FALL goes in Midyear and SPRING in Year end for the printed PGY. EPA Tracker rotation comments are added to the existing Word evaluation summaries with their evaluator and date.")
                 else:
                     st.caption("One file or several, including New Innovations reports with several residents. You can also use the all_resident_milestones.csv file from your notebook.")
         st.caption("Use the report's own dates and training year. An x stays unassessed. Only residents matched to your Administration roster are saved.")
-        st.caption("Crosswalk PDFs without a calendar date use Fallback period ends below as their as-of date. Set that date to the assessment date when importing an older report.")
+        st.caption("Crosswalk and EPA Tracker recommendation scores use Fallback period ends below as their as-of date when no assessment date is printed. Comments keep their own completion dates. Set the fallback end date when importing an older assessment.")
+        include_pdf_comments = st.checkbox(
+            "Include rotation comments from EPA Tracker PDFs", value=True,
+            key="include_milestone_pdf_comments",
+            help="Clear this to import scores only if these comments are already saved from .tab files. The PDF and .tab formats use different evaluation references.",
+        )
     with st.expander("Self-assessments and other reports"):
         specialty = st.radio("These files are for", m.SPECIALTIES, horizontal=True, key="upload_specialty")
         st.caption("This choice applies to the additional reports below. Choose Combined for a mixed evaluation export or shared administrative reports.")
@@ -1011,7 +1031,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         st.caption(f"{count} file{'s' if count != 1 else ''} selected. Empty upload areas do not need a file.")
     else:
         st.caption("Add at least one file to process. You do not need every report type.")
-    upload_context = (first, last, tuple((kind, specialty, f.name, hashlib.sha256(f.getvalue()).hexdigest()) for kind, files, specialty in groups for f in files))
+    upload_context = (first, last, tuple((kind, specialty, f.name, hashlib.sha256(f.getvalue()).hexdigest()) for kind, files, specialty in groups for f in files), include_pdf_comments)
     process_label = f"Process {count} file{'s' if count != 1 else ''}" if count else "Process files"
     if st.button(process_label, type="primary", disabled=count == 0, width="stretch"):
         if count > 100 or sum(f.size for _, files, _ in groups for f in files) > 60 * 1024 * 1024:
@@ -1049,8 +1069,17 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                     else:
                         result = parse_upload(file.name, data, kind, specialty, period_start=first, period_end=last)
                         parsed_files[parse_key] = result
+                    if not include_pdf_comments:
+                        comments = [record for record in result.records
+                                    if record.get("category") == "evaluations"
+                                    and record.get("source_format") == "epa_tracker_competency_comments_pdf"]
+                        if comments:
+                            result = copy.deepcopy(result)
+                            result.records = [record for record in result.records if record not in comments]
+                            result.warnings.append("Only milestone scores are included. Rotation comments were left out by your selection.")
                     source = {"id": m.new_id(), "name": file.name, "sha256": digest, "size": len(data),
                               "kind": kind, "specialty": specialty, "period_start": first, "period_end": last, "profile": result.profile}
+                    source["record_categories"] = sorted({record["category"] for record in result.records})
                     # A content match is a hint, not a reason to skip parsing or
                     # matching. The roster may now include previously skipped names.
                     previously_uploaded = (digest, kind, specialty) in saved_file_keys
@@ -1065,7 +1094,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         preview.pop("data", None)
     if not previews:
         with st.expander("Help choosing an export"):
-            st.write("Use the original New Innovations exports. The app reads CSV, Excel, tab-delimited files, and the HTML-style Excel files used by the older reports. The milestone areas accept the New Innovations summary PDFs and your notebook's long CSV output. Scanned PDFs or unrecognized layouts need a labeled spreadsheet.")
+            st.write("Use the original New Innovations exports. The app reads CSV, Excel, tab-delimited files, and the HTML-style Excel files used by the older reports. The milestone areas also accept New Innovations summary PDFs, General Pediatrics crosswalk PDFs, EPA Tracker competency scores and rotation comments PDFs, and your notebook's long CSV output. Scanned PDFs or unrecognized layouts need a labeled spreadsheet.")
             st.caption("Blank compatibility templates are available under Administration. Do not upload the populated REDCap dashboard PDF here.")
         return
     st.subheader("Review before saving")
@@ -1120,7 +1149,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 label, status = "Check resident matches or warnings", "pending"
             counts[status] += 1
             rows.append({"File": source["name"], "Specialty": source["specialty"],
-                         "Report": m.CATEGORIES.get(source["kind"], source["kind"]), "Status": label,
+                         "Report": _source_report_label(source), "Status": label,
                          "New entries": new_counts.get(source_id, 0) if batch is not None else None})
         with file_status:
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
@@ -1760,7 +1789,7 @@ def _archive_management(state: dict, store: GitHubStore, keys: list[str]) -> Non
     st.caption("New imports save only entries matched to your roster. Original export files are not stored in GitHub.")
     if state["sources"]:
         sources = sorted(state["sources"], key=lambda s: s.get("uploaded_at", ""), reverse=True)
-        st.dataframe(pd.DataFrame([{"File": s["name"], "Category": m.CATEGORIES.get(s.get("kind"), ""), "Specialty": s.get("specialty", ""),
+        st.dataframe(pd.DataFrame([{"File": s["name"], "Category": _source_report_label(s), "Specialty": s.get("specialty", ""),
                                     "Saved": _pretty_time(s.get("uploaded_at")), "Original copy": "Encrypted" if s.get("blob_id") else "Not retained",
                                     "Status": "Active" if s.get("active", True) else "Excluded"} for s in sources]), hide_index=True, width="stretch")
         if any(source.get("blob_id") for source in sources):
