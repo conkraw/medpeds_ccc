@@ -268,6 +268,115 @@ def match_resident(state: dict, name: str, external_id: str = "") -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+_FAMILY_NAME_PARTICLES = {
+    "al", "bin", "da", "das", "de", "del", "della", "den", "der", "di", "do", "dos",
+    "du", "el", "ibn", "la", "le", "st", "van", "von",
+}
+
+
+def _suggestion_name_parts(value: Any, family_hint: tuple[str, ...] | None = None) -> tuple | None:
+    """Keep explicit surname boundaries when suggesting a manual name link."""
+    text = str(value or "").strip()
+    text = re.sub(r",?\s+(?:M\.?D\.?|D\.?O\.?|MBBS|Ph\.?D\.?)\s*$", "", text, flags=re.I)
+    if text.count(",") > 1:
+        return None
+    explicit = "," in text
+    if explicit:
+        family_text, given_text = text.split(",", 1)
+        family = tuple(normalize_name(family_text).split())
+        words = [tuple(normalize_name(word).split()) for word in given_text.split()]
+        words = [word for word in words if word]
+        if not family or not words:
+            return None
+        first, middle = words[0], tuple(token for word in words[1:] for token in word)
+    else:
+        words = [tuple(normalize_name(word).split()) for word in text.split()]
+        words = [word for word in words if word]
+        if len(words) < 2:
+            return None
+        family_start = len(words) - 1
+        if family_hint:
+            # Match the entire known family name on whitespace-word boundaries.
+            # This permits Garcia Example without dropping Garcia as a middle.
+            for family_start in range(len(words) - 1, 0, -1):
+                tail = tuple(token for word in words[family_start:] for token in word)
+                if tail == family_hint:
+                    break
+                if len(tail) >= len(family_hint):
+                    return None
+            else:
+                return None
+            explicit = True
+        else:
+            while (family_start > 1 and len(words[family_start - 1]) == 1
+                   and words[family_start - 1][0] in _FAMILY_NAME_PARTICLES):
+                family_start -= 1
+            # Hyphenated names and known particles define a surname unit.
+            explicit = family_start < len(words) - 1 or len(words[-1]) > 1
+        family = tuple(token for word in words[family_start:] for token in word)
+        first, middle = words[0], tuple(token for word in words[1:family_start] for token in word)
+    if not first or not family or any(token.isdigit() for token in (*first, *middle, *family)):
+        return None
+    if family[-1] in {"jr", "sr", "ii", "iii", "iv", "v"}:
+        return None
+    return first, middle, family, explicit
+
+
+def _middle_names_compatible(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    if not left or not right:
+        return True
+    return len(left) == len(right) and all(
+        a == b or len(a) == 1 and b.startswith(a) or len(b) == 1 and a.startswith(b)
+        for a, b in zip(left, right)
+    )
+
+
+def resident_name_suggestions(state: dict, name: str, external_id: str = "") -> list[str]:
+    """Suggest possible roster links for review without assigning a resident.
+
+    Exact aliases remain authoritative. Other suggestions need the same full
+    first and family names, with absent or compatible middle names. Commas,
+    compound surnames and middle initials provide explicit boundaries. A full
+    extra word between two uncommaed names is not assumed to be a middle name.
+    Conflicting stored identifiers are never overridden by a name suggestion.
+    """
+    external_id = str(external_id or "").strip()
+    if external_id:
+        identified = [resident["id"] for resident in state["residents"]
+                      if str(resident.get("external_id") or "").strip() == external_id]
+        if identified:
+            return list(dict.fromkeys(identified))
+    normalized = normalize_name(name)
+    if len(normalized.split()) < 2:
+        return []
+    source_parts = _suggestion_name_parts(name)
+    suggestions = []
+    for resident in state["residents"]:
+        if external_id and str(resident.get("external_id") or "").strip() not in {"", external_id}:
+            continue
+        choices = [resident["name"], *resident.get("aliases", [])]
+        if normalized in {normalize_name(choice) for choice in choices}:
+            suggestions.append(resident["id"])
+            continue
+        for choice in choices:
+            target_parts = _suggestion_name_parts(choice)
+            if not source_parts or not target_parts:
+                continue
+            left, right = source_parts, target_parts
+            if left[3] and not right[3]:
+                right = _suggestion_name_parts(choice, left[2])
+            elif right[3] and not left[3]:
+                left = _suggestion_name_parts(name, right[2])
+            if not left or not right or left[0] != right[0] or left[2] != right[2]:
+                continue
+            if not (left[3] or right[3]) and not any(len(token) == 1 for token in (*left[1], *right[1])):
+                continue
+            if _middle_names_compatible(left[1], right[1]):
+                suggestions.append(resident["id"])
+                break
+    return list(dict.fromkeys(suggestions))
+
+
 def save_resident(state: dict, data: dict, actor: str) -> dict:
     result = copy.deepcopy(state)
     item = copy.deepcopy(data)

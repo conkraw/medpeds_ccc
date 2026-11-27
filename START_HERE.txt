@@ -1,6 +1,6 @@
 MED-PEDS CCC COMPLETE APP
-Version 1.3.0
-Packaged November 26, 2026
+Version 1.3.1
+Packaged November 27, 2026
 
 This ZIP contains the complete deployable application and the latest updates.
 You do not need to combine it with an earlier update ZIP.
@@ -26,7 +26,7 @@ UPDATE YOUR EXISTING APP
    may take longer while LibreOffice Writer and the PDF viewer are installed.
 
 5. Sign in with your existing account. Your saved roster should load.
-   Administration shows App version 1.3.0. If the app offers to create an
+   Administration shows App version 1.3.1. If the app offers to create an
    empty dashboard when you expect existing records, check that Secrets still
    point to the existing encrypted file before continuing.
 
@@ -35,6 +35,10 @@ The scripts/generate_secrets.py setup instructions are for a new installation.
 
 LATEST UPDATES INCLUDED
 
+- Resident-name overrides directly in the upload preview, including names
+  previously skipped because of middle names or a different spelling.
+- Confirmed name variations remembered for later uploads, including when
+  the underlying evidence is already saved.
 - EPA Tracker Competency scores and rotation comments PDFs accepted in
   the existing milestone upload area.
 - Original evaluation comments read across pages and placed in the regular
@@ -50,6 +54,25 @@ LATEST UPDATES INCLUDED
 - Evaluation flagger and selected comments in the CCC Word document.
 - Annual exam scores, clinic tallies, and observed encounters.
 - Existing roster matching, duplicate checks, encrypted storage, and accounts.
+
+MATCH A DIFFERENT RESIDENT NAME
+
+Process the uploaded files. Below Residents in your Administration roster,
+choose the existing resident for a source name that needs a match. Possible
+middle-name matches are suggested but require your selection.
+
+For a name that is still skipped, open Match or override skipped names and
+change Skip these entries to the correct resident. The selection applies to
+both milestone scores and comments in that source name's records.
+
+Leave Remember confirmed name variations for future uploads checked, review
+the preview and save. Future uploads recognize that spelling automatically.
+If the data was already imported, Save name matches saves just the spelling.
+Your resident's display name and previously saved evidence stay in place.
+
+You can also add the full source name under Other names used in exports in
+Administration. There is no need to rename the resident or create another
+roster entry.
 
 USE THE NEW MILESTONE PDF FORMAT
 

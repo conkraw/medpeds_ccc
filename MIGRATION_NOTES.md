@@ -28,6 +28,8 @@ The app stores an observation once and selects it by the report's dates. It does
 
 Residents are matched by name or a confirmed alias. The app creates its own internal reference. You do not need a New Innovations ID or REDCap record ID.
 
+Version 1.3.1 exposes resident-name overrides directly in the upload preview. Unrecognized names remain skipped until assigned to an existing resident. Confirmed variations use the existing saved alias field, so no data migration is needed. An alias-only save changes the roster spelling list without rewriting evidence or source upload timestamps.
+
 New Innovations milestone grids are read by their labeled cells. The new Pediatrics crosswalk uses its first-page recommendation table and saves the maximum of each printed range. Missing scores remain distinct from zero.
 
 EPA Tracker Competency scores and rotation comments PDFs can be uploaded through Milestone reports. The app saves their recommendation scores and original evaluation comments as separate evidence categories. No archive migration is required. Existing sources without category metadata remain readable.

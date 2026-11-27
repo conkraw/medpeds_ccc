@@ -2,13 +2,21 @@
 
 ## Current update
 
-Version 1.3.0, packaged November 26, 2026, was checked with Python 3.12 and the pinned application dependencies. The version label identifies this complete bundle and does not change the stored data schema.
+Version 1.3.1, packaged November 27, 2026, was checked with Python 3.12 and the pinned application dependencies. The version label identifies this complete bundle and does not change the stored data schema.
 
-The focused internal suite passed 260 tests plus 8 subtests. It covered PDF conversion, preview navigation and session isolation, upload parsing, the Pediatrics crosswalk, the combined EPA Tracker scores/comments report, resident matching, checkpoint identity, duplicate handling, report generation and upload batching.
+The focused internal suite passed 315 tests plus 8 subtests. It covered PDF conversion, preview navigation and session isolation, upload parsing, the Pediatrics crosswalk, the combined EPA Tracker scores/comments report, resident matching and overrides, checkpoint identity, duplicate handling, report generation and upload batching.
 
 This is a complete deployment bundle. Internal test files and development-only fixtures are not included in the ZIP.
 
-The final staged package passed import checks for all 15 application modules, production and demo startup through Streamlit AppTest, and a real five-page fictional CCC Word-to-PDF conversion. These checks used the packaged file layout.
+The final staged package passed import checks for all 15 application modules and production and demo startup through Streamlit AppTest. The milestone/comment parser, Word builder and PDF converter are unchanged from version 1.3.0, which also passed a real five-page fictional CCC Word-to-PDF conversion using the packaged file layout.
+
+## Resident-name override checks
+
+The exact resident matcher is unchanged. Middle-name suggestions require confirmation and retain explicit surname boundaries. Focused cases cover additional middle names, compatible initials, ambiguous candidates, aliases, compound surnames, accents, credentials and conflicting identifiers. Source names that cannot be suggested remain accessible through a manual roster selector.
+
+Real-PDF Streamlit tests confirmed that a selected name maps both milestone scores and evaluation comments to the same existing resident. A saved alias matches in a new session, while an unchecked Remember option leaves the roster aliases unchanged. A skipped-name override survives reruns.
+
+The upload preview rejects a proposed alias that belongs to another resident. A failed persistence attempt leaves both evidence and aliases unchanged in the saved state, and retry commits them together. An alias-only save for duplicate evidence preserves every existing record, source and upload timestamp.
 
 ## Combined competency report checks
 

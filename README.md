@@ -1,6 +1,6 @@
 # Med-Peds CCC dashboard
 
-Complete package version 1.3.0, November 26, 2026.
+Complete package version 1.3.1, November 27, 2026.
 
 This complete deployment package includes the resident dashboard, encrypted GitHub storage, Word reports, PDF previews, evaluation comment selection, and the updated Pediatrics milestone importer. EPA Tracker reports titled Competency scores and rotation comments can now supply both scores and written evaluation comments through the milestone upload area.
 
@@ -29,7 +29,13 @@ After committing the files, reboot the Streamlit app and refresh your browser. T
 
 One upload is enough. Leave the other upload areas empty. Readable files can be processed even when another selected file cannot be read.
 
-Only evaluation and milestone entries matched to your Administration roster are saved. Other residents from those exports are ignored. If an expected resident is missing, add the source spelling under that resident's Other names used in exports. You do not need to create a New Innovations ID or REDCap record ID.
+Only evaluation and milestone entries assigned to your Administration roster are saved. You do not need to create a New Innovations ID or REDCap record ID.
+
+If a report uses a middle name or another spelling, choose the existing resident in the upload preview. Possible middle-name matches are suggested for confirmation. Other unrecognized names start as skipped and can be assigned under Match or override skipped names. Leave entries from other programs skipped.
+
+Leave Remember confirmed name variations for future uploads checked to save the selected source spelling with the resident. Later uploads match that spelling automatically. This keeps the resident's display name and existing records in place. If the evidence is already saved, Save name matches can remember a new spelling without adding duplicate evidence or changing upload timestamps. A name already assigned to another resident must be corrected before it can be remembered.
+
+You can also manage saved spellings under Other names used in exports in Administration.
 
 The app detects duplicate entries. Later uploads add new evidence, including historical exports. Reuploading a previously partial file can add newly matched residents without adding the saved entries again. Confirm changed evidence when the preview asks.
 

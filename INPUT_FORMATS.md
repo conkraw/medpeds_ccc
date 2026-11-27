@@ -32,7 +32,13 @@ Headers are normalized for capitalization, surrounding spaces and common punctua
 
 ## Resident filtering and duplicate handling
 
-Evaluation and milestone imports save only entries matched to the Administration roster. Other residents from those exports are ignored. If a roster resident has a different spelling in an export, add that spelling under Other names used in exports.
+Evaluation and milestone imports save only entries assigned to the Administration roster. Exact names and saved aliases match automatically. Compatible middle-name variations can be suggested for review, but suggestions do not assign a resident until the user selects one.
+
+Every unmatched source name has an override. Names that appear to match the roster are shown for confirmation. Other names start as Skip these entries under Match or override skipped names. Choose an existing roster resident there to include a different spelling, or leave entries from other programs skipped. The same selection applies to all milestone scores and evaluation comments under that source name.
+
+Remember confirmed name variations for future uploads saves the source spelling as a resident alias with the import. A later upload recognizes that spelling automatically. If every record is already saved, Save name matches can persist the alias alone. Neither an alias-only save nor a duplicate-only import changes existing evidence or its upload dates. Failed saves leave both the saved aliases and evidence unchanged until a successful retry.
+
+First names alone, surnames alone and ambiguous suggestions are not used for automatic assignment. Conflicting saved aliases are flagged before saving. Other names used in exports in Administration remains available for editing aliases directly.
 
 Exact saved entries are skipped. Reuploading a file can add a resident whose rows were previously omitted, without adding the already saved records again. Changed evidence is identified for review.
 

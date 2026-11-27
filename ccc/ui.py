@@ -83,6 +83,35 @@ def _source_report_label(source: dict) -> str:
     return ", ".join(m.CATEGORIES[category] for category in m.CATEGORIES if category in categories) or str(source.get("kind", ""))
 
 
+def _upload_alias_updates(state: dict, records: list[dict], mappings: dict[str, str]) -> tuple[list[dict], int]:
+    """Plan confirmed aliases without changing saved residents or evidence."""
+    residents = {resident["id"]: resident for resident in state["residents"]}
+    known = {
+        resident_id: {m.normalize_name(name) for name in [resident["name"], *resident.get("aliases", [])]}
+        for resident_id, resident in residents.items()
+    }
+    owners = {}
+    for resident_id, spellings in known.items():
+        for spelling in spellings:
+            owners.setdefault(spelling, set()).add(resident_id)
+    updates = {}
+    count = 0
+    for record in records:
+        target = mappings.get(m.mapping_key(record))
+        alias = str(record.get("resident_name") or "").strip()
+        normalized = m.normalize_name(alias)
+        if target not in residents or not normalized or normalized in known[target]:
+            continue
+        if owners.get(normalized, set()) - {target}:
+            raise m.ValidationError("A confirmed name variation already belongs to another resident. Correct the match or turn off remembering name variations for this import.")
+        resident = updates.setdefault(target, copy.deepcopy(residents[target]))
+        resident.setdefault("aliases", []).append(alias)
+        known[target].add(normalized)
+        owners.setdefault(normalized, set()).add(target)
+        count += 1
+    return list(updates.values()), count
+
+
 def _configure() -> None:
     st.set_page_config(page_title="Med-Peds Resident Progress", page_icon="📋", layout="wide",
                        initial_sidebar_state="expanded")
@@ -1190,7 +1219,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     has_roster_reports = any(categories & roster_categories for categories in name_categories.values())
     st.subheader("Residents in your Administration roster" if has_roster_reports else "Confirm the residents")
     if has_roster_reports:
-        st.caption("Only residents matched to your Administration roster are included. Other evaluation and milestone entries are ignored automatically. If a resident uses a different spelling, add it under Other names used in exports in Administration.")
+        st.caption("Only entries assigned to your Administration roster are included. Match a different spelling or middle name below. You can also open Match or override skipped names to include an entry the app did not recognize.")
     else:
         st.caption("Residents are matched by name. Confirm any different spelling below. New Innovations and REDCap record IDs are not required.")
     roster_summary = st.container() if has_roster_reports else None
@@ -1199,6 +1228,10 @@ def _uploads(state: dict, store: GitHubStore) -> None:
     match_batch = hashlib.sha256("|".join(p["source"]["id"] for p in included).encode()).hexdigest()[:16]
     auto_matches = {key: m.match_resident(state, record.get("resident_name", ""), record.get("external_id", ""))
                     for key, record in names.items()}
+    suggestions = {
+        key: m.resident_name_suggestions(state, record.get("resident_name", ""), record.get("external_id", ""))
+        for key, record in names.items() if auto_matches[key] not in roster_ids
+    }
     roster_names = {m.normalize_name(name) for resident in state["residents"]
                     for name in [resident["name"], *resident.get("aliases", [])] if m.normalize_name(name)}
     roster_external_ids = {str(resident.get("external_id", "")).strip() for resident in state["residents"]
@@ -1219,24 +1252,17 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         and m.normalize_name(record.get("resident_name", "")) not in roster_names
         and str(record.get("external_id", "")).strip() not in roster_external_ids
         and key not in milestone_name_candidates
+        and not suggestions.get(key)
     }
     unmatched_keys = [key for key in names if auto_matches[key] not in roster_ids]
     widget_keys = {key: "map_" + match_batch + "_" + hashlib.sha256(key.encode()).hexdigest()[:16] for key in names}
     mappings = {}
     if has_roster_reports:
-        # Ignore obsolete focus toggles and unresolved hidden widget values.
-        # The exclusion is a rule on every rerun, not a checkbox transition.
+        # Keep every source name reachable. Unknown names start as skipped,
+        # but a visible selector can override that default on any rerun.
         for prefix in ("skip_unmatched_", "skip_unmatched_applied_", "automatic_skips_"):
             st.session_state.pop(prefix + match_batch, None)
-        for key in safe_roster_skips:
-            previous_match = st.session_state.get(widget_keys[key])
-            if previous_match not in roster_ids:
-                mappings[key] = "__skip__"
-                st.session_state.pop(widget_keys[key], None)
-        # Keep a deliberate roster match from an older unsaved preview. Its
-        # control is still rendered below, so Streamlit retains that choice.
-        matched_keys = [key for key in names if auto_matches[key] in roster_ids
-                        or (key in safe_roster_skips and key not in mappings)]
+        matched_keys = [key for key in names if auto_matches[key] in roster_ids]
     else:
         skip_unmatched = st.checkbox(
             "Skip unmatched names for this import", value=False, key="skip_unmatched_" + match_batch,
@@ -1252,15 +1278,19 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 st.session_state[widget_key] = "__choose__"
     options = ["__choose__", *roster_ids, "__skip__"]
 
-    def resident_match(key: str) -> None:
+    def resident_match(key: str, *, default_skip: bool = False) -> None:
         record = names[key]
         auto = auto_matches[key]
         label = str(record.get("resident_name") or "Unnamed resident")
         if record.get("external_id"):
             label += " · source ID " + str(record["external_id"])
-        mappings[key] = st.selectbox(_escape(label), options, index=options.index(auto) if auto in options else 0,
+        widget_key = widget_keys[key]
+        if widget_key in st.session_state and st.session_state[widget_key] not in options:
+            st.session_state.pop(widget_key, None)
+        default = auto if auto in options else "__skip__" if default_skip else "__choose__"
+        mappings[key] = st.selectbox(_escape(label), options, index=options.index(default),
                                      format_func=lambda x: "Choose a resident" if x == "__choose__" else "Skip these entries" if x == "__skip__" else roster_labels[x],
-                                     key=widget_keys[key])
+                                     key=widget_key)
 
     if has_roster_reports:
         if matched_keys:
@@ -1271,9 +1301,18 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         review_keys = [key for key in unmatched_keys if key not in safe_roster_skips]
         if review_keys:
             st.write("Names that need a match or an explicit choice to skip")
-            st.caption("These names may match your roster, or also appear in another report type. Confirm the resident before including them.")
+            st.caption("Choose the resident for each source name, or skip its entries. Suggested names are not assigned until you choose.")
             for key in review_keys:
+                if suggestions.get(key):
+                    st.caption("Possible roster match" + ("es: " if len(suggestions[key]) > 1 else ": ")
+                               + ", ".join(_escape(roster_labels[resident_id]) for resident_id in suggestions[key]))
                 resident_match(key)
+        if safe_roster_skips:
+            with st.expander("Match or override skipped names", expanded=not matched_keys and not review_keys):
+                st.caption("These names start as skipped. Choose an existing roster resident to include their entries, or leave them skipped if they belong to another program.")
+                for key in names:
+                    if key in safe_roster_skips:
+                        resident_match(key, default_skip=True)
     else:
         if unmatched_keys:
             st.caption(f"{len(unmatched_keys)} name{'s' if len(unmatched_keys) != 1 else ''} need a match or an explicit choice to skip.")
@@ -1305,7 +1344,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                 st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
                 st.caption("Selected entries for your roster residents, before duplicate checks.")
             else:
-                st.info("No entries are matched to your Administration roster yet. Check the resident names and Other names used in exports in Administration, then process the files again.")
+                st.info("No entries are matched to your Administration roster yet. Choose the residents below or open Match or override skipped names. A genuinely new resident can be added under Administration.")
             if skipped_names:
                 skipped_entries = sum(mappings[m.mapping_key(record)] == "__skip__" for record in all_records)
                 st.caption(f"{skipped_names} name{'s' if skipped_names != 1 else ''} skipped, covering {skipped_entries} entr{'ies' if skipped_entries != 1 else 'y'}. These entries will not be added to resident dashboards.")
@@ -1324,6 +1363,7 @@ def _uploads(state: dict, store: GitHubStore) -> None:
             replacements[src["id"]] = st.selectbox("Replacement for " + _escape(src["name"]), ["__none__", *labels],
                                                     format_func=lambda x: "Add as a new upload" if x == "__none__" else labels[x], key="replace_" + src["id"])
     possible = 0
+    alias_count = 0
     preview_problem = False
     batch_preview = None
     try:
@@ -1331,6 +1371,8 @@ def _uploads(state: dict, store: GitHubStore) -> None:
                                              allow_possible_updates=True)
         stats = batch_preview.stats
         possible = stats["possible_updates"]
+        if remember:
+            _, alias_count = _upload_alias_updates(batch_preview.candidate, all_records, mappings)
         if possible:
             overlap_label = "entry overlaps" if possible == 1 else "entries overlap"
             st.warning(f"{possible} {overlap_label} saved evidence or another selected file with changed content. Review the overlaps before confirming they should be kept as additional evidence.")
@@ -1338,43 +1380,46 @@ def _uploads(state: dict, store: GitHubStore) -> None:
         preview_problem = True
         st.error(str(exc))
     show_file_summary(batch_preview, mappings)
-    if batch_preview is not None and not batch_preview.saved_source_ids:
+    if alias_count:
+        st.caption(f"{alias_count} confirmed name variation{'s' if alias_count != 1 else ''} will be remembered when you save.")
+    if batch_preview is not None and not batch_preview.saved_source_ids and not alias_count and not preview_problem:
         st.info("No new entries to save. The selected entries are already saved or were set to skip. The last saved update date is unchanged.")
         return
     preview_id = hashlib.sha256(json.dumps({"sources": [p["source"]["id"] for p in included],
-                                           "mappings": mappings, "replacements": replacements}, sort_keys=True).encode()).hexdigest()[:16]
+                                           "mappings": mappings, "replacements": replacements,
+                                           "remember_names": remember}, sort_keys=True).encode()).hexdigest()[:16]
     allow_updates = st.checkbox("I checked overlapping entries and want to keep any remaining revisions as additional evidence", disabled=possible == 0, key="allow_updates_" + preview_id)
     acknowledged = st.checkbox("The included files, resident matches, dates, and any warnings are correct", key="ack_upload_" + preview_id)
-    if st.button("Save to resident dashboards", type="primary", disabled=not acknowledged or preview_problem or "__choose__" in mappings.values() or (possible > 0 and not allow_updates), width="stretch"):
+    save_label = "Save name matches" if batch_preview is not None and not batch_preview.saved_source_ids and alias_count else "Save to resident dashboards"
+    if st.button(save_label, type="primary", disabled=not acknowledged or preview_problem or "__choose__" in mappings.values() or (possible > 0 and not allow_updates), width="stretch"):
         if st.session_state.get("pending_save"):
             st.error("Resolve the earlier save problem before importing another batch.")
             return
         try:
             batch = prepare_upload_batch(state, included, mappings, _actor(), replacements=replacements,
                                          allow_possible_updates=allow_updates)
-            if not batch.saved_source_ids:
-                st.info("No new entries to save. The selected entries are already saved or were set to skip. The last saved update date is unchanged.")
-                return
             candidate = batch.candidate
             saved_sources = [(p, p["source"]["id"]) for p in included if p["source"]["id"] in batch.saved_source_ids]
+            remembered_count = 0
             if remember:
-                saved_names = {m.mapping_key(r): r for p, _ in saved_sources for r in p["records"]}
-                for key, record in saved_names.items():
-                    target = mappings[key]
-                    if target not in roster_ids or not record.get("resident_name"):
-                        continue
-                    resident = copy.deepcopy(m.resident_by_id(candidate, target))
-                    alias = str(record["resident_name"]).strip()
-                    if m.normalize_name(alias) not in {m.normalize_name(n) for n in [resident["name"], *resident.get("aliases", [])]}:
-                        resident.setdefault("aliases", []).append(alias)
-                        candidate = m.save_resident(candidate, resident, _actor())
+                alias_updates, remembered_count = _upload_alias_updates(candidate, all_records, mappings)
+                for resident in alias_updates:
+                    candidate = m.save_resident(candidate, resident, _actor())
+            if not batch.saved_source_ids and not remembered_count:
+                st.info("No new entries or name matches to save. The last saved update date is unchanged.")
+                return
             m.validate_state(candidate)
             # Persist only the roster-matched candidate. Original export bytes
             # must never be archived, even when they contain a matched resident.
             encrypt_state(candidate, st.session_state["encryption_keys"])
             count_saved = len(saved_sources)
-            message = f"Saved matched entries from {count_saved} file{'s' if count_saved != 1 else ''}. Resident dashboards are updated."
-            if batch.skipped_source_ids:
+            if count_saved:
+                message = f"Saved matched entries from {count_saved} file{'s' if count_saved != 1 else ''}. Resident dashboards are updated."
+                if remembered_count:
+                    message += f" Remembered {remembered_count} name variation{'s' if remembered_count != 1 else ''} for future uploads."
+            else:
+                message = f"Saved {remembered_count} name variation{'s' if remembered_count != 1 else ''} for future uploads. Existing evidence is unchanged."
+            if count_saved and batch.skipped_source_ids:
                 count_skipped = len(batch.skipped_source_ids)
                 message += f" Skipped {count_skipped} file{'s' if count_skipped != 1 else ''} with no new entries."
             if _persist(candidate, store, message):
