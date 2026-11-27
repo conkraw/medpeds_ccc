@@ -736,6 +736,58 @@ def _resident_page(state: dict, store: GitHubStore | None) -> None:
         _history(state, resident, store)
 
 
+def _yearly_review_notes(state: dict, resident: dict, progress: dict, store: GitHubStore) -> None:
+    from ccc import annual
+
+    st.subheader("Midyear and end-of-year review")
+    pgy, academic_year = progress["pgy"], progress["academic_year"]
+    prefix = f"yearly_review_{resident['id']}_{pgy}_{academic_year}"
+    default_half = ("Midyear" if _today(state) < m.add_months(m.parse_date(progress["period_start"]), 6)
+                    else "Year end")
+    half = st.radio("Review checkpoint", m.HALVES, index=m.HALVES.index(default_half), horizontal=True,
+                    format_func=lambda value: "End of year" if value == "Year end" else value,
+                    key=f"{prefix}_checkpoint")
+    review = annual.review_for_checkpoint(state, resident["id"], pgy, half, academic_year)
+    defaults = review or annual.default_review(resident, progress, half, _today(state))
+    label = f"PGY{pgy} {half} · {academic_year}"
+    st.caption(f"{label}. Each checkpoint has its own notes. These four sections stay blank in the Word report until you enter and save text.")
+    form_key = f"{prefix}_{half}_{defaults.get('id', 'new')}_{state['revision']}"
+    fields = defaults.get("fields", {})
+    if review and review["status"] == "Final":
+        st.info("This review is finalized. An administrator can reopen it under Resident review > Review history.")
+        for key, field_label in annual.NARRATIVE_FIELDS.items():
+            st.text_area(field_label, value=fields.get(key, ""), height=115, disabled=True,
+                          key=f"{form_key}_{key}")
+        return
+    if review:
+        st.caption(f"Last saved: {_pretty_time(review.get('updated_at', ''))}. These are the same notes shown in Resident review.")
+    with st.form(form_key):
+        entered = {key: st.text_area(field_label, value=fields.get(key, ""), height=115,
+                                     key=f"{form_key}_{key}")
+                   for key, field_label in annual.NARRATIVE_FIELDS.items()}
+        with st.expander("Review dates"):
+            a, b, c = st.columns(3)
+            first = a.date_input("Review period starts", value=m.parse_date(defaults["period_start"]))
+            last = b.date_input("Evidence cutoff", value=m.parse_date(defaults["period_end"]))
+            meeting = c.date_input("Meeting date", value=m.parse_date(defaults["review_date"]))
+        st.caption("Save these notes before changing the resident, residency year, or checkpoint.")
+        submitted = st.form_submit_button("Save review notes", type="primary", width="stretch")
+    if submitted:
+        data = {"pgy": pgy, "half": half, "academic_year": academic_year,
+                "period_start": first.isoformat(), "period_end": last.isoformat(),
+                "review_date": meeting.isoformat(), "fields": entered}
+        if review:
+            data["id"] = review["id"]
+        try:
+            candidate = annual.save_review_notes(state, resident["id"], data, _actor())
+            if _persist(candidate, store, f"{label} review notes saved."):
+                st.rerun()
+        except m.ValidationError as exc:
+            st.error(str(exc))
+    if review:
+        st.caption(f"To share this checkpoint, open Word reports and select {label} under Use evidence from.")
+
+
 def _yearly_progress_page(state: dict, store: GitHubStore | None) -> None:
     from ccc import annual
 
@@ -744,7 +796,7 @@ def _yearly_progress_page(state: dict, store: GitHubStore | None) -> None:
     if resident is None:
         return
     st.subheader(_escape(resident["name"]))
-    st.caption("Save exam results, clinic patient tallies, and observed encounters for each residency year. These values carry forward into CCC summaries.")
+    st.caption("Save midyear and end-of-year review notes, exam results, clinic patient tallies, and observed encounters for each residency year.")
     current = annual.progress_for(state, resident["id"], _today(state).isoformat())
     summary = []
     for pgy in range(1, 5):
@@ -785,6 +837,9 @@ def _yearly_progress_page(state: dict, store: GitHubStore | None) -> None:
     if selected:
         defaults["as_of"] = max(defaults["period_start"], min(defaults["period_end"], _today(state).isoformat()))
     fields = defaults["fields"]
+    _yearly_review_notes(state, resident, defaults, store)
+    st.divider()
+    st.subheader("Yearly scores and encounters")
     legacy = sorted([review for review in state["reviews"] if review["resident_id"] == resident["id"]
                      and review["pgy"] == pgy and review.get("academic_year") == defaults["academic_year"]],
                     key=lambda review: (review["period_end"], review.get("updated_at", "")), reverse=True)
@@ -1536,6 +1591,7 @@ def _word_reports(state: dict) -> None:
     if document_type == "CCC summary":
         st.caption("Uses your table format, with Medicine and Pediatrics evaluation summaries starting on separate pages.")
         st.caption("Saved choices from Evaluation flagger appear on a separate comments page after both evaluation summaries.")
+        st.caption("The four review sections use the notes you saved for that checkpoint in Yearly progress. Select a saved review above to share a specific midyear or end-of-year assessment.")
     st.caption("Downloads are standard Word files. No export passphrase is required.")
     context = json.dumps({"revision": state["revision"], "residents": [r["id"] for r in selected_residents],
                           "review": selected_review, "start": start, "end": end, "type": document_type,

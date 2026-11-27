@@ -1,6 +1,6 @@
 # Med-Peds CCC dashboard
 
-Complete package version 1.3.1, November 27, 2026.
+Complete package version 1.4.0, November 27, 2026.
 
 This complete deployment package includes the resident dashboard, encrypted GitHub storage, Word reports, PDF previews, evaluation comment selection, and the updated Pediatrics milestone importer. EPA Tracker reports titled Competency scores and rotation comments can now supply both scores and written evaluation comments through the milestone upload area.
 
@@ -20,7 +20,7 @@ After committing the files, reboot the Streamlit app and refresh your browser. T
 | --- | --- |
 | Program dashboard | Review the resident roster, evidence counts and latest evaluation updates. |
 | Upload files | Add whichever Medicine, Pediatrics or administrative reports are available, then process and save the matched entries. |
-| Yearly progress | Enter exam results, clinic patient totals and observed encounters for PGY1 through PGY4. |
+| Yearly progress | Enter midyear and end-of-year review notes, exam results, clinic patient totals and observed encounters for PGY1 through PGY4. |
 | Resident review | Review evidence and milestone history, then document a dated CCC checkpoint. |
 | Evaluation flagger | Review low ratings and choose written comments for the CCC summary. |
 | Word reports | Prepare a CCC summary, progress report or CCC letter for one resident or a group. |
@@ -44,6 +44,16 @@ Up to 100 files and 60 MB total can be processed in a batch, with a 15 MB limit 
 Read INPUT_FORMATS.md for supported inputs and date handling.
 
 ## Yearly progress and CCC reviews
+
+Choose the resident and residency year, then choose Midyear or End of year. Enter Overall impression, Areas for growth, Patterns over time and Med-Peds CCC review. Select Save review notes to keep the changes. Each resident, residency year, academic year and checkpoint has its own notes.
+
+These four Word sections contain only the corresponding saved text. A section remains blank until text is entered and saved. Clearing a field and saving makes that section blank again. Milestone scores and source details are no longer added automatically to these boxes. Scores and evaluation comments remain in their existing report tables.
+
+The notes use the same saved review as Resident review, so there is no second copy to maintain. Existing review fields and finalized versions are retained. Finalized notes are read-only until an administrator uses the existing reopen action in Review history.
+
+To prepare a specific review for the resident, open Word reports and choose its PGY, Midyear or Year end, and academic year under Use evidence from. Current dashboard reports include notes only from the matching checkpoint through the report cutoff. A new checkpoint starts blank.
+
+Review dates can be adjusted in the notes form. For a new review, the default evidence cutoff is today or the checkpoint end, whichever comes first within the selected training year. Saving notes does not change the yearly scores below them.
 
 Yearly progress contains Pediatrics ITE score and expected pass rate, Medicine ITE score and percentile, adult and pediatric clinic patient totals, and four observed encounter statuses per residency year.
 

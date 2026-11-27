@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import math
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ccc import model as m
@@ -29,6 +29,78 @@ FIELD_LABELS = {**NUMERIC_FIELDS, **ENCOUNTER_FIELDS}
 PERCENT_FIELDS = frozenset({"pediatrics_ite_expected_pass_rate", "medicine_ite_percentile"})
 COUNT_FIELDS = frozenset({"adult_clinic_count", "pediatric_clinic_count"})
 _IDENTITY_FIELDS = ("resident_id", "pgy", "academic_year", "period_start", "period_end")
+NARRATIVE_FIELDS = {
+    "overall_impression": "Overall impression",
+    "areas_for_growth": "Areas for growth",
+    "patterns_over_time": "Patterns over time",
+    "ccc_summary": "Med-Peds CCC review",
+}
+
+
+def _review_identity(pgy: Any, half: Any, academic_year: Any) -> tuple[int, str, str]:
+    if type(pgy) is not int or pgy not in range(1, 5) or half not in m.HALVES:
+        raise m.ValidationError("Choose PGY1 through PGY4 and a midyear or end-of-year review.")
+    if (not isinstance(academic_year, str) or not re.fullmatch(r"\d{4}-\d{4}", academic_year)
+            or int(academic_year[5:]) != int(academic_year[:4]) + 1):
+        raise m.ValidationError("Enter the review academic year as consecutive years, such as 2026-2027.")
+    return pgy, half, academic_year
+
+
+def review_for_checkpoint(state: dict, resident_id: str, pgy: int, half: str,
+                          academic_year: str) -> dict | None:
+    """Open the same review used by Resident review, without copying another checkpoint."""
+    m.resident_by_id(state, resident_id)
+    identity = _review_identity(pgy, half, academic_year)
+    matches = [review for review in state["reviews"] if review["resident_id"] == resident_id
+               and (review["pgy"], review["half"], review["academic_year"]) == identity]
+    if len(matches) > 1:
+        raise m.ValidationError("More than one review uses this checkpoint. Open Review history to check the saved reviews.")
+    return copy.deepcopy(matches[0]) if matches else None
+
+
+def default_review(resident: dict, progress: dict, half: str, as_of: Any = None) -> dict:
+    """Blank review notes for the selected training year, through the supplied date."""
+    period = _period(progress)
+    _review_identity(period["pgy"], half, period["academic_year"])
+    if progress.get("resident_id", resident["id"]) != resident["id"]:
+        raise m.ValidationError("The selected training year belongs to another resident.")
+    first, last = m.parse_date(period["period_start"]), m.parse_date(period["period_end"])
+    if half == "Midyear":
+        last = min(last, m.add_months(first, 6) - timedelta(days=1))
+    cutoff = m.parse_date(as_of if as_of is not None else period["as_of"])
+    if cutoff is None:
+        raise m.ValidationError("Choose a valid review date.")
+    cutoff = max(first, min(last, cutoff)).isoformat()
+    return {"pgy": period["pgy"], "half": half, "academic_year": period["academic_year"],
+            "period_start": first.isoformat(), "period_end": cutoff, "review_date": cutoff,
+            "fields": {key: "" for key in NARRATIVE_FIELDS}}
+
+
+def save_review_notes(state: dict, resident_id: str, data: dict, actor: str) -> dict:
+    """Save four manual narratives in the existing review, keeping its other fields."""
+    if not isinstance(data, dict):
+        raise m.ValidationError("Enter review notes using the yearly progress form.")
+    pgy, half, academic_year = _review_identity(data.get("pgy"), data.get("half"), data.get("academic_year"))
+    old = review_for_checkpoint(state, resident_id, pgy, half, academic_year)
+    if data.get("id") and (old is None or data["id"] != old["id"]):
+        raise m.ValidationError("The selected review no longer matches this resident and checkpoint. Open the review again.")
+    if old and old["status"] == "Final":
+        raise m.ValidationError("This review is finalized. Reopen it with a reason before editing.")
+    supplied = data.get("fields", {})
+    if not isinstance(supplied, dict) or any(key not in NARRATIVE_FIELDS for key in supplied):
+        raise m.ValidationError("Only the four review note fields can be saved from this form.")
+    if any(value is not None and not isinstance(value, str) for value in supplied.values()):
+        raise m.ValidationError("Enter review notes as text, or leave a section blank.")
+    item = copy.deepcopy(old) if old else {}
+    item.update(pgy=pgy, half=half, academic_year=academic_year)
+    for key in ("period_start", "period_end", "review_date"):
+        if key in data:
+            item[key] = data[key]
+        elif key not in item:
+            raise m.ValidationError("Choose the review period and meeting date before saving.")
+    fields = item.setdefault("fields", {})
+    fields.update({key: "" if value is None else value for key, value in supplied.items()})
+    return m.validate_state(m.save_review(state, resident_id, item, actor))
 
 
 def _key(item: dict) -> tuple:

@@ -8,6 +8,10 @@ Keep the existing Streamlit Secrets, encryption key, GitHub token, data reposito
 
 Whole original exports are not retained from new uploads. Earlier app versions may have stored separate encrypted originals. Preserve the existing data repository if those historical objects are needed.
 
+Version 1.4.0 adds the four manual review fields to Yearly progress using the existing CCC review records. No archive migration or reimport is needed. Existing review text, other review fields, annual values and finalized snapshots are preserved. Saving these notes updates only the selected checkpoint's four narrative fields and its chosen review dates.
+
+The CCC Word adapter no longer inserts milestone provenance or miscellaneous source notes into the four manual review sections. It does not copy an earlier checkpoint's narrative into a later one. This changes newly generated reports, including blank review boxes when no text was saved. It does not erase the underlying evidence or alter documents already downloaded.
+
 ## How the earlier workflow is represented
 
 | Earlier concept | Current app |

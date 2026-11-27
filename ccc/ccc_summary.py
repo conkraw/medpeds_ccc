@@ -170,11 +170,11 @@ _DUTY_MAP = {
     "duty_80_hour_window": "eightyhr_window",
     "duty_80_hour_rotations": "eightyhr_rotations",
 }
-_NARRATIVE_MAP = {
-    "nursing_feedback": "360_rn",
+_MANUAL_NARRATIVE_MAP = {
     "overall_impression": "overall_imp",
     "areas_for_growth": "areas_for_growth",
     "patterns_over_time": "patterns",
+    "ccc_summary": "ccc_concerns",
 }
 _MILESTONE_DOMAINS = {
     "Medicine": [("pc", 6), ("mk", 3), ("sbp", 3), ("pbli", 2), ("pro", 4), ("ics", 3)],
@@ -334,6 +334,34 @@ def _target(ctx: _Context, entries: list[dict]) -> str:
     return f"r{ctx.pgy}{half}"
 
 
+def _manual_narrative_fields(ctx: _Context, entries: list[dict], target: str) -> dict:
+    """Use only the entered assessment for this exact review checkpoint.
+
+    Source notes, imported scores, and other assessment fields are not prose
+    for these four boxes. A current report must also not carry an earlier
+    checkpoint's narrative into a checkpoint the reviewer has not completed.
+    """
+    if ctx.explicit_review:
+        return ctx.fields
+    first = _training_year_start(ctx, ctx.pgy, ctx.period_end, entries)
+    if target == "r4eoy" and m.current_pgy(ctx.resident, ctx.period_end) > 4 and not any(
+        entry.get("pgy") == 4 and entry.get("fields")
+        and entry.get("period_start", "9999") <= ctx.period_end <= entry.get("period_end", "")
+        for entry in entries
+    ):
+        # As with the report title, retain the last scheduled checkpoint after
+        # graduation unless a repeated or extended PGY4 has been recorded.
+        first = m.add_months(date.fromisoformat(ctx.resident["start_date"]), 36)
+    academic_year = m.academic_year(first)
+    matching = [review for review in _eligible_history(ctx)
+                if _review_target(review) == target
+                and review.get("academic_year") == academic_year]
+    if not matching:
+        return {}
+    fields = matching[-1].get("fields", {})
+    return fields if isinstance(fields, dict) else {}
+
+
 def _paragraphs(parts: Iterable[Any]) -> str:
     """Escape admin-entered plain text before the notebook's HTML cleanup."""
     return "".join("<p>" + html.escape(_scalar(part)).replace("\n", "<br>") + "</p>"
@@ -373,8 +401,8 @@ def _annual_fields(row: dict, ctx: _Context, entries: list[dict], target: str, n
                 row[f"obenc{number}_{pgy}"] = "1" if value is True else "0" if value is False else ""
                 if value is False and len(candidates) == 1:
                     notes.append(f"{_entry_label(selected)}: observed encounter {number} not completed.")
-        # The notebook has one cell per PGY. Additional annual identities are
-        # preserved in its existing CCC narrative, without changing its grid.
+        # The notebook has one cell per PGY. Additional annual identities stay
+        # in the source archive. They must not fill a manually entered review.
         if len(candidates) > 1 or pgy > ctx.pgy:
             for entry in candidates:
                 details = []
@@ -635,34 +663,21 @@ def _prepare_row(ctx: _Context) -> pd.Series:
                 grouped[(legacy, destination)].append(value)
     for (legacy, checkpoint), values in grouped.items():
         row[f"{legacy}_{checkpoint}"] = _join_distinct(values)
-    for modern, legacy in _NARRATIVE_MAP.items():
-        if modern in ctx.fields:
-            row[f"{legacy}_{target}"] = _paragraphs([ctx.fields[modern]])
-    if _text(ctx.fields.get("strengths")):
-        current = row.get(f"overall_imp_{target}", "")
-        row[f"overall_imp_{target}"] = current + _paragraphs(["Strengths: " + _text(ctx.fields["strengths"])])
-
-    direct = {"coach_name", "rotation_summary", "strengths", "abstracts", "publications", "advocacy",
-              "ccc_summary", "duty_resolution_notes", *_NARRATIVE_MAP, *_DUTY_MAP, *_ANNUAL_MAP,
-              "adult_clinic_count", "pediatric_clinic_count", "pediatrics_ite_percentile",
-              "observed_encounters_completed", *[f"observed_encounter_{i}" for i in range(1, 5)],
-              "usmle_step1", "usmle_step2ck", "usmle_step3"}
-    committee = [_text(ctx.fields.get("ccc_summary"))]
-    labels = {**m.REVIEW_TEXT_FIELDS, **m.REVIEW_VALUE_FIELDS, **ANNUAL_LABELS}
-    for key, value in ctx.fields.items():
-        if key in direct or _LEGACY_FIELD.fullmatch(str(key)) or _blank(value):
-            continue
-        label = labels.get(key, str(key).replace("_", " ").capitalize())
-        committee.append(f"{label}\n{_text(value)}")
+    if "nursing_feedback" in ctx.fields:
+        row[f"360_rn_{target}"] = _paragraphs([ctx.fields["nursing_feedback"]])
+    narrative_fields = _manual_narrative_fields(ctx, entries, target)
+    for modern, legacy in _MANUAL_NARRATIVE_MAP.items():
+        destination = f"{legacy}_{target}"
+        # A saved empty string explicitly clears the box. Legacy text is used
+        # only from the matching review, never from an unscoped roster value.
+        row[destination] = (_paragraphs([narrative_fields[modern]])
+                            if modern in narrative_fields
+                            else _scalar(narrative_fields.get(destination, "")))
     for review in history:
         for modern, legacy in (("usmle_step1", "step1"), ("usmle_step2ck", "step2ck"), ("usmle_step3", "step3")):
             fields = review.get("fields", {})
             if modern in fields:
                 row[legacy] = _fmt(fields[modern])
-    committee.extend(notes)
-    if any(committee):
-        row[f"ccc_concerns_{target}"] = row.get(f"ccc_concerns_{target}", "") + _paragraphs(committee)
-
     for specialty, legacy, title, color in (
         ("Medicine", "mp5", "MEDICINE EVALUATION SUMMARY", "#D9EAF7"),
         ("Pediatrics", "mp3", "PEDIATRIC EVALUATION SUMMARY", "#BFEDD2"),

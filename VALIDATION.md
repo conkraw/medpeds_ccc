@@ -2,13 +2,23 @@
 
 ## Current update
 
-Version 1.3.1, packaged November 27, 2026, was checked with Python 3.12 and the pinned application dependencies. The version label identifies this complete bundle and does not change the stored data schema.
+Version 1.4.0, packaged November 27, 2026, was checked with Python 3.12 and the pinned application dependencies. The version label identifies this complete bundle and does not change the stored data schema.
 
-The focused internal suite passed 315 tests plus 8 subtests. It covered PDF conversion, preview navigation and session isolation, upload parsing, the Pediatrics crosswalk, the combined EPA Tracker scores/comments report, resident matching and overrides, checkpoint identity, duplicate handling, report generation and upload batching.
+Verification passed 436 focused tests plus 8 subtests, including the corrected historical-milestone assertion that previously expected automatic prose in the CCC review box. It covered the four manual review fields, separate checkpoint selection, persistence and reporting, along with PDF conversion, preview navigation, upload parsing, resident matching, duplicate handling and upload batching.
 
 This is a complete deployment bundle. Internal test files and development-only fixtures are not included in the ZIP.
 
-The final staged package passed import checks for all 15 application modules and production and demo startup through Streamlit AppTest. The milestone/comment parser, Word builder and PDF converter are unchanged from version 1.3.0, which also passed a real five-page fictional CCC Word-to-PDF conversion using the packaged file layout.
+The original notebook Word layout, milestone/comment parser and PDF converter are unchanged. The CCC adapter now fills the four review boxes from the saved fields for the matching checkpoint.
+
+## Manual review note checks
+
+The helper and Streamlit checks cover blank defaults, four-field saving and reload, explicit clearing, and separate resident, PGY, academic-year and Midyear or Year end entries. Updating notes preserves other review fields, annual values and metadata. Finalized reviews remain read-only and prior snapshots survive reopening.
+
+Report checks confirm that imported milestones do not populate the review boxes, only the corresponding saved text appears, and an earlier checkpoint cannot fill a later blank one. Explicit saved reviews use their own fields and frozen evidence. Existing manual legacy text is used only when it belongs to the matching review, with explicitly cleared modern fields taking precedence.
+
+Failed saves retain the pending notes for retry. Successful saves invalidate older generated Word downloads and PDF previews. Viewer accounts cannot edit notes.
+
+Two complete fictional CCC summaries were generated, one with imported milestones and blank review fields and one after saving all four notes. Both converted through the production PDF converter and rendered as five-page reports with 26 tables. Visual inspection confirmed blank or correctly filled narrative boxes, unchanged milestone matrices and specialty evaluation pages, and no clipping or overlap.
 
 ## Resident-name override checks
 
@@ -50,7 +60,7 @@ The checks confirmed:
 - Separate checkpoint identities for different PGYs and seasons.
 - Duplicate detection and report-date cutoffs.
 
-The prior notebook layout was preserved. Current-year midyear scores appear in the milestone table. For later-year reports, prior-year midyear values follow the existing notebook behavior and can remain in narrative notes when only prior-year EOY table rows are displayed.
+The prior notebook layout was preserved. Current-year midyear scores appear in the milestone table. For later-year reports, the notebook retains its existing selection of milestone rows. Additional historical values remain available in the resident evidence history and are no longer appended to the manual CCC review box.
 
 ## PDF checks
 
@@ -66,7 +76,7 @@ Preview checks confirmed that the same generated Word bytes are converted, prepa
 
 Older development tests were recovered from previous app versions. Some still expect the earlier 27-table layout, question wording in comments, older annual-field layouts or an option to retain whole original exports.
 
-Those expectations conflict with later requested behavior. The same old report-test failures were reproduced against the unchanged restored baseline. They were not treated as new failures caused by this update, and the current verification does not claim that every historical test passes.
+Those expectations conflict with later requested behavior. Ten old report-test failures were reproduced against the unchanged 1.3.1 baseline. Two further old assertions expect automatic historical notes in the CCC review box or PGY1 narrative copied into PGY3. Those expectations conflict with the current request. The current verification does not claim that every historical test passes.
 
 The current package keeps the requested notebook layout and later comment-cleanup behavior.
 

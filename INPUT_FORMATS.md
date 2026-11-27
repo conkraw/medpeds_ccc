@@ -117,6 +117,8 @@ The standardized long format can represent a source summary with record_mode set
 
 ## Yearly entries and report output
 
+In Yearly progress, choose the residency year and Midyear or End of year to enter Overall impression, Areas for growth, Patterns over time and Med-Peds CCC review. Save review notes stores these in that resident's existing CCC checkpoint. A blank field stays blank in the Word summary. Numeric milestone recommendations are not narrative review text.
+
 Enter exam results, clinic totals and observed encounters directly in Yearly progress. Set Progress recorded through to the date represented by those values. Blank remains unrecorded and zero remains an entered value.
 
 The CCC summary uses the notebook-based tables. Medicine and Pediatrics evaluation summaries start on separate pages. Evaluation comments omit question prompts and Comment prefixes. Resident-on-resident evaluator names are suppressed for the supported peer evaluation session names.
